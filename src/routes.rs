@@ -1,13 +1,13 @@
-use actix_web::{delete, get, post, web::Json, HttpResponse,Responder};
+use actix_web::{body, delete, get, post, web::Json, HttpResponse, Responder};
 
 use crate::{inputs::{CreateOrderInput, DeleteOrder}, outputs::{CreateOrderResponse, DeleteOrderResponse, Depth}};
 
 #[post("/order")]
-pub async fn create_order(body: Json<CreateOrderInput>) -> impl Responder {
-    let price = body.0.price;
-    let quantity = body.0.quantity;
-    let user_id = body.0.user_id;
-    let side = body.0.side;
+pub async fn create_order(Json(body): Json<CreateOrderInput>) -> impl Responder {
+    let price = body.price;
+    let quantity = body.quantity;
+    let user_id = body.user_id;
+    let side = body.side;
 
     // maintain orderbook logic here
 
