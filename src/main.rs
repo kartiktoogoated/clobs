@@ -2,10 +2,11 @@ use actix_web::{App, HttpServer};
 
 use crate::routes::{create_order, delete_order, get_depth};
 
-pub mod routes;
 pub mod inputs;
-pub mod outputs;
 pub mod orderbook;
+pub mod outputs;
+pub mod persist;
+pub mod routes;
 
 #[actix_web::main]
 async fn main() -> Result<(), std::io::Error> {
@@ -19,4 +20,3 @@ async fn main() -> Result<(), std::io::Error> {
     .run()
     .await
 }
-

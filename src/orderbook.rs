@@ -1,4 +1,5 @@
 use crate::inputs::Side;
+use crate::outputs::Depth;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 #[derive(Debug, Clone)]
@@ -102,12 +103,58 @@ impl OrderBook {
             side,
         };
 
-        match side {
-            Side::Buy => self.bids.entry(price).or_default().push_back(order.clone()),
-            Side::Sell => self.bids.entry(price).or_default().push_back(order.clone()),
+        self.match_limit_order(order);
+        order_id
+    }
+
+    pub fn delete_order(&mut self, order_id: u32) -> (u32, u32) {
+        if let Some((side, price)) = self.order_id_map.remove(&order_id) {
+            let book = match side {
+                Side::Buy => &mut self.bids,
+                Side::Sell => &mut self.asks,
+            };
+
+            if let Some(queue) = book.get_mut(&price) {
+                if let Some(pos) = queue.iter().position(|o| o.order_id == order_id) {
+                    let order = queue.remove(pos).unwrap();
+                    // Clean up empty levels
+                    if queue.is_empty() {
+                        book.remove(&price);
+                    }
+                    return (order.quantity, order.price); // (qty removed, avg price)
+                }
+            }
         }
 
-        self.order_id_map.insert(order_id, (side, price));
-        order_id
+        (0, 0) // not found
+    }
+
+    pub fn get_depth(&self, depth_limit: usize) -> Depth {
+        let mut bids = self
+            .bids
+            .iter()
+            .rev() // highest price first
+            .map(|(&price, orders)| {
+                let total_qty: u32 = orders.iter().map(|o| o.quantity).sum();
+                [price, total_qty]
+            })
+            .take(depth_limit)
+            .collect();
+
+        let mut asks = self
+            .asks
+            .iter() // lowest price first
+            .map(|(&price, orders)| {
+                let total_qty: u32 = orders.iter().map(|o| o.quantity).sum();
+                [price, total_qty]
+            })
+            .take(depth_limit)
+            .collect();
+
+        Depth {
+            bids,
+            asks,
+            lastUpdateId: self.next_id.to_string(),
+        }
     }
 }
