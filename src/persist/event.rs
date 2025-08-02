@@ -6,4 +6,3 @@ pub enum PersistEvent {
     OrderFilled { order_id: u32, traded_qty: u32 },
     OrderDeleted { order_id: u32 },
 }
-

@@ -1,6 +1,8 @@
 use crate::inputs::Side;
 use crate::outputs::Depth;
+use crate::persist::PersistEvent;
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug, Clone)]
 pub struct Order {
@@ -16,15 +18,17 @@ pub struct OrderBook {
     pub asks: BTreeMap<u32, VecDeque<Order>>,
     pub order_id_map: HashMap<u32, (Side, u32)>,
     pub next_id: u32,
+    pub tx: UnboundedSender<PersistEvent>,
 }
 
 impl OrderBook {
-    pub fn new() -> Self {
+    pub fn new(tx: UnboundedSender<PersistEvent>) -> Self {
         Self {
             bids: BTreeMap::new(),
             asks: BTreeMap::new(),
             order_id_map: HashMap::new(),
             next_id: 1,
+            tx,
         }
     }
 
@@ -53,7 +57,13 @@ impl OrderBook {
                 }
 
                 let traded_qty = order.quantity.min(resting_order.quantity);
+                order.quantity -= traded_qty;
                 resting_order.quantity -= traded_qty;
+
+                let _ = self.tx.send(PersistEvent::OrderFilled {
+                    order_id: resting_order.order_id,
+                    traded_qty,
+                });
 
                 println!(
                     "Matched: {} {:?} {} @ {} with {}",
@@ -103,7 +113,10 @@ impl OrderBook {
             side,
         };
 
+        let clone_for_tx = order.clone();
+
         self.match_limit_order(order);
+        let _ = self.tx.send(PersistEvent::NewOrder(clone_for_tx));
         order_id
     }
 
@@ -117,6 +130,7 @@ impl OrderBook {
             if let Some(queue) = book.get_mut(&price) {
                 if let Some(pos) = queue.iter().position(|o| o.order_id == order_id) {
                     let order = queue.remove(pos).unwrap();
+                    let _ = self.tx.send(PersistEvent::OrderDeleted { order_id });
                     // Clean up empty levels
                     if queue.is_empty() {
                         book.remove(&price);
