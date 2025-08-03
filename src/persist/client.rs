@@ -1,5 +1,6 @@
 use crate::orderbook::Order;
 use scylla::{Session, SessionBuilder};
+use uuid::Uuid;
 
 pub struct ScyllaClient {
     session: Session,
@@ -13,7 +14,6 @@ impl ScyllaClient {
             .await
             .expect("Failed to connect to ScyllaDB");
 
-        // Optional: create keyspace/table if not exists
         session
             .query(
                 "CREATE KEYSPACE IF NOT EXISTS clob WITH REPLICATION = { 'class': 'SimpleStrategy', 'replication_factor': 1 };",
@@ -83,5 +83,28 @@ impl ScyllaClient {
             .await?;
         Ok(())
     }
+    pub async fn insert_trade(
+        &self,
+        trade_id: Uuid,
+        price: u32,
+        quantity: u32,
+        maker_order_id: u32,
+        taker_order_id: u32,
+        timestamp: i64,
+    ) -> Result<(), scylla::transport::errors::QueryError> {
+        self.session
+        .query(
+            "INSERT INTO clob.trades (trade_id, price, quantity, maker_order_id, taker_order_id, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                trade_id,
+                price as i32,
+                quantity as i32,
+                maker_order_id as i32,
+                taker_order_id as i32,
+                timestamp,
+            ),
+        )
+        .await
+        .map(|_| ()) // this makes it return Result<(), Error>
+    }
 }
-

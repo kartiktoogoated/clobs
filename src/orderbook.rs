@@ -70,6 +70,17 @@ impl OrderBook {
                     traded_qty, order.side, price, order.user_id, resting_order.user_id
                 );
 
+                let trade_event = PersistEvent::TradeExecuted {
+                    trade_id: uuid::Uuid::new_v4(),
+                    price,
+                    quantity: traded_qty,
+                    maker_order_id: resting_order.order_id,
+                    taker_order_id: order.order_id,
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                };
+
+                let _ = self.tx.send(trade_event);
+
                 // Removing the resting order if fully filled
                 if resting_order.quantity == 0 {
                     queue.pop_front();

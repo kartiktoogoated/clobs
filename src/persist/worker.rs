@@ -1,4 +1,4 @@
-use crate::persist::client::ScyllaClient;
+use crate::persist::client::{self, ScyllaClient};
 use crate::persist::event::PersistEvent;
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -32,6 +32,33 @@ pub async fn start_persistence_worker(
                     );
                     if let Err(e) = scylla.mark_filled(order_id, traded_qty).await {
                         eprintln!("Failed to mark order filled: {:?}", e);
+                    }
+                }
+                PersistEvent::TradeExecuted {
+                    trade_id,
+                    price,
+                    quantity,
+                    maker_order_id,
+                    taker_order_id,
+                    timestamp,
+                } => {
+                    println!(
+                        "[Persist] Trade executed: price={}, qty={}, maker={}, taker={}",
+                        price, quantity, maker_order_id, taker_order_id
+                    );
+
+                    if let Err(e) = scylla
+                        .insert_trade(
+                            trade_id,
+                            price,
+                            quantity,
+                            maker_order_id,
+                            taker_order_id,
+                            timestamp,
+                        )
+                        .await
+                    {
+                        eprintln!("Failed to persist trade: {:?}", e);
                     }
                 }
             }
