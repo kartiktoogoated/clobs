@@ -4,7 +4,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 pub async fn start_persistence_worker(
     mut rx: UnboundedReceiver<PersistEvent>,
-    scylla: ScyllaClient, // will contain the connection
+    scylla: ScyllaClient,
 ) {
     tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
@@ -13,7 +13,6 @@ pub async fn start_persistence_worker(
                     println!("[Persist] New Order: {:?}", order);
                     if let Err(e) = scylla.insert_order(order).await {
                         eprintln!("Failed to persist order: {:?}", e);
-                        // optionally: push to retry queue
                     }
                 }
                 PersistEvent::OrderDeleted { order_id } => {

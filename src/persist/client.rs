@@ -105,6 +105,6 @@ impl ScyllaClient {
             ),
         )
         .await
-        .map(|_| ()) // this makes it return Result<(), Error>
+        .map(|_| ())
     }
 }
