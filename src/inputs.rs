@@ -9,7 +9,7 @@ pub struct CreateOrderInput {
     pub side: Side,
 }
 
-#[derive(Deserialize, Debug, PartialEq, Clone, Copy)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy)]
 pub enum Side {
     Buy,
     Sell,
@@ -19,4 +19,3 @@ pub enum Side {
 pub struct DeleteOrder {
     pub order_id: String,
 }
-

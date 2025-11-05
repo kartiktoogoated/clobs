@@ -1,4 +1,5 @@
 use crate::orderbook::Order;
+use crate::persist::event::PersistEvent;
 use scylla::{Session, SessionBuilder};
 use uuid::Uuid;
 
@@ -14,14 +15,17 @@ impl ScyllaClient {
             .await
             .expect("Failed to connect to ScyllaDB");
 
+        // Ensure keyspace
         session
             .query(
-                "CREATE KEYSPACE IF NOT EXISTS clob WITH REPLICATION = { 'class': 'SimpleStrategy', 'replication_factor': 1 };",
+                "CREATE KEYSPACE IF NOT EXISTS clob \
+                 WITH REPLICATION = { 'class': 'SimpleStrategy', 'replication_factor': 1 };",
                 &[],
             )
             .await
             .unwrap();
 
+        // Orders table
         session
             .query(
                 "CREATE TABLE IF NOT EXISTS clob.orders (
@@ -36,6 +40,23 @@ impl ScyllaClient {
             .await
             .unwrap();
 
+        // Trades table
+        session
+            .query(
+                "CREATE TABLE IF NOT EXISTS clob.trades (
+                    trade_id uuid PRIMARY KEY,
+                    price int,
+                    quantity int,
+                    maker_order_id int,
+                    taker_order_id int,
+                    timestamp bigint
+                );",
+                &[],
+            )
+            .await
+            .unwrap();
+
+        println!("[Scylla] Connected and schema initialized.");
         Self { session }
     }
 
@@ -50,8 +71,15 @@ impl ScyllaClient {
 
         self.session
             .query(
-                "INSERT INTO clob.orders (order_id, user_id, price, quantity, side) VALUES (?, ?, ?, ?, ?);",
-                (order.order_id as i32, order.user_id as i32, order.price as i32, order.quantity as i32, side_str),
+                "INSERT INTO clob.orders (order_id, user_id, price, quantity, side) \
+                 VALUES (?, ?, ?, ?, ?);",
+                (
+                    order.order_id as i32,
+                    order.user_id as i32,
+                    order.price as i32,
+                    order.quantity as i32,
+                    side_str,
+                ),
             )
             .await?;
         Ok(())
@@ -83,6 +111,7 @@ impl ScyllaClient {
             .await?;
         Ok(())
     }
+
     pub async fn insert_trade(
         &self,
         trade_id: Uuid,
@@ -93,18 +122,67 @@ impl ScyllaClient {
         timestamp: i64,
     ) -> Result<(), scylla::transport::errors::QueryError> {
         self.session
-        .query(
-            "INSERT INTO clob.trades (trade_id, price, quantity, maker_order_id, taker_order_id, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
-            (
+            .query(
+                "INSERT INTO clob.trades (trade_id, price, quantity, maker_order_id, taker_order_id, timestamp) \
+                 VALUES (?, ?, ?, ?, ?, ?);",
+                (
+                    trade_id,
+                    price as i32,
+                    quantity as i32,
+                    maker_order_id as i32,
+                    taker_order_id as i32,
+                    timestamp,
+                ),
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn handle_event(&self, event: PersistEvent) {
+        match event {
+            PersistEvent::NewOrder(order) => {
+                if let Err(e) = self.insert_order(order).await {
+                    eprintln!("[Scylla] Failed to insert order: {:?}", e);
+                }
+            }
+            PersistEvent::OrderDeleted { order_id } => {
+                if let Err(e) = self.delete_order(order_id).await {
+                    eprintln!("[Scylla] Failed to delete order {}: {:?}", order_id, e);
+                }
+            }
+            PersistEvent::OrderFilled {
+                order_id,
+                traded_qty,
+            } => {
+                if let Err(e) = self.mark_filled(order_id, traded_qty).await {
+                    eprintln!(
+                        "[Scylla] Failed to mark order {} filled (qty={}): {:?}",
+                        order_id, traded_qty, e
+                    );
+                }
+            }
+            PersistEvent::TradeExecuted {
                 trade_id,
-                price as i32,
-                quantity as i32,
-                maker_order_id as i32,
-                taker_order_id as i32,
+                price,
+                quantity,
+                maker_order_id,
+                taker_order_id,
                 timestamp,
-            ),
-        )
-        .await
-        .map(|_| ())
+            } => {
+                if let Err(e) = self
+                    .insert_trade(
+                        trade_id,
+                        price,
+                        quantity,
+                        maker_order_id,
+                        taker_order_id,
+                        timestamp,
+                    )
+                    .await
+                {
+                    eprintln!("[Scylla] Failed to insert trade {:?}: {:?}", trade_id, e);
+                }
+            }
+        }
     }
 }

@@ -1,7 +1,8 @@
 use crate::orderbook::Order;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PersistEvent {
     NewOrder(Order),
     OrderFilled {

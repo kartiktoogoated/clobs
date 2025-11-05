@@ -3,13 +3,14 @@ use crate::outputs::Depth;
 use crate::persist::PersistEvent;
 use crate::worker::Broadcaster;
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Order {
     pub order_id: u32,
     pub user_id: u32,

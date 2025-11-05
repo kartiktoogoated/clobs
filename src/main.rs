@@ -8,6 +8,7 @@ use crate::routes::{create_order, delete_order, get_depth};
 use crate::worker::{Broadcaster, ws_index};
 
 pub mod inputs;
+pub mod kafka_worker;
 pub mod orderbook;
 pub mod outputs;
 pub mod persist;
