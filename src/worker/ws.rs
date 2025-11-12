@@ -1,6 +1,5 @@
 use actix::prelude::*;
 use actix_web_actors::ws;
-use serde_json::json;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -14,21 +13,30 @@ impl Broadcaster {
             clients: Arc::new(Mutex::new(Vec::new())),
         }
     }
-
     pub fn broadcast(&self, msg: &str) {
         let clients = self.clients.lock().unwrap();
         for client in clients.iter() {
-            let _ = client.do_send(WsMessage(msg.to_owned()));
+            let _ = client.do_send(WsMessage::Text(msg.to_owned()));
+        }
+    }
+
+    pub fn broadcast_bytes(&self, data: &[u8]) {
+        let clients = self.clients.lock().unwrap();
+        for client in clients.iter() {
+            let _ = client.do_send(WsMessage::Binary(data.to_vec()));
         }
     }
 }
 
 #[derive(Message)]
 #[rtype(result = "()")]
-pub struct WsMessage(pub String);
+pub enum WsMessage {
+    Text(String),
+    Binary(Vec<u8>),
+}
 
 pub struct WsSession {
-    broadcaster: Broadcaster,
+    pub broadcaster: Broadcaster,
 }
 
 impl Actor for WsSession {
@@ -58,7 +66,10 @@ impl Handler<WsMessage> for WsSession {
     type Result = ();
 
     fn handle(&mut self, msg: WsMessage, ctx: &mut ws::WebsocketContext<Self>) {
-        ctx.text(msg.0);
+        match msg {
+            WsMessage::Text(text) => ctx.text(text),
+            WsMessage::Binary(data) => ctx.binary(data),
+        }
     }
 }
 
@@ -70,6 +81,5 @@ pub async fn ws_index(
     let session = WsSession {
         broadcaster: broadcaster.get_ref().clone(),
     };
-    let resp = ws::start(session, &req, stream);
-    resp
+    ws::start(session, &req, stream)
 }

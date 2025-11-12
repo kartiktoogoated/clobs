@@ -2,7 +2,8 @@ use reqwest::Client;
 use rmp_serde;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use sysinfo::{CpuRefreshKind, RefreshKind, System};
 use tokio::sync::Mutex;
 
 #[derive(Serialize, Deserialize)]
@@ -11,11 +12,6 @@ struct CreateOrderInput {
     quantity: u32,
     user_id: u32,
     side: String,
-}
-
-#[derive(Deserialize)]
-struct CreateOrderResponse {
-    order_id: String,
 }
 
 #[derive(Default)]
@@ -59,18 +55,61 @@ impl Stats {
     }
 }
 
+async fn monitor_cpu(stop: Arc<Mutex<bool>>) {
+    let mut sys =
+        System::new_with_specifics(RefreshKind::nothing().with_cpu(CpuRefreshKind::everything()));
+    let mut samples = vec![];
+
+    loop {
+        if *stop.lock().await {
+            break;
+        }
+
+        sys.refresh_cpu_specifics(CpuRefreshKind::everything());
+        let cpus = sys.cpus();
+        if cpus.is_empty() {
+            continue;
+        }
+
+        let total_usage: f32 = cpus.iter().map(|c| c.cpu_usage()).sum();
+        let avg = total_usage / cpus.len() as f32;
+        samples.push(avg);
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    if !samples.is_empty() {
+        let avg_cpu: f32 = samples.iter().sum::<f32>() / samples.len() as f32;
+        let peak = samples.iter().cloned().fold(0.0, f32::max);
+        println!("================= CPU Usage Stats =================");
+        println!(
+            "Average CPU Utilization: {:.1}% | Peak: {:.1}%",
+            avg_cpu, peak
+        );
+        println!("Samples: {}", samples.len());
+        println!("=====================================================");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
-async fn msgpack_stress_test() {
+async fn msgpack_stress_test_with_cpu() {
     let base_url = "http://127.0.0.1:8080";
-    let total_requests = 100_000;
-    let concurrency = 500;
+    let total_requests = 500_000;
+    let concurrency = 2_000;
+
     let client = Arc::new(Client::new());
     let stats = Arc::new(Mutex::new(Stats::default()));
+    let stop = Arc::new(Mutex::new(false));
 
     println!(
         "MessagePack Stress Test: {} total requests | {} concurrency",
         total_requests, concurrency
     );
+
+    let stop_monitor = stop.clone();
+    tokio::spawn(async move {
+        monitor_cpu(stop_monitor).await;
+    });
 
     let start_time = Instant::now();
     let mut handles = vec![];
@@ -82,19 +121,16 @@ async fn msgpack_stress_test() {
         handles.push(tokio::spawn(async move {
             for j in 0..(total_requests / concurrency) {
                 let start_op = Instant::now();
-
                 let side = if (i + j) % 2 == 0 { "Buy" } else { "Sell" };
                 let price = 10000 + ((i * j) % 2000);
                 let qty = 1 + ((i + j) % 20);
                 let user_id = 1000 + (i % 1000);
-
                 let input = CreateOrderInput {
                     price,
                     quantity: qty,
                     user_id,
                     side: side.to_string(),
                 };
-
                 let body = rmp_serde::to_vec(&input).unwrap();
 
                 let ok = client
@@ -115,6 +151,8 @@ async fn msgpack_stress_test() {
     for h in handles {
         let _ = h.await;
     }
+
+    *stop.lock().await = true;
 
     let total_time = start_time.elapsed().as_secs_f64();
     let total_done = stats.lock().await.total;

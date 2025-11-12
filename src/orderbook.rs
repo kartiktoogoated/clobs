@@ -4,20 +4,44 @@ use crate::persist::PersistEvent;
 use crate::worker::Broadcaster;
 
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+use serde::{Deserialize, Serialize};
+use wincode_derive::{SchemaRead, SchemaWrite};
+
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead)]
 pub struct Order {
     pub order_id: u32,
     pub user_id: u32,
     pub price: u32,
     pub quantity: u32,
     pub side: Side,
+}
+
+#[derive(SchemaWrite, SchemaRead)]
+struct DepthUpdate {
+    msg_type: &'static str,
+    depth: WireDepth,
+}
+
+#[derive(SchemaWrite, SchemaRead)]
+struct TradeMsg {
+    msg_type: &'static str,
+    price: u32,
+    quantity: u32,
+    maker_order_id: u32,
+    taker_order_id: u32,
+    timestamp: i64,
+}
+
+#[derive(SchemaWrite, SchemaRead)]
+struct WireDepth {
+    bids: Vec<[u32; 2]>,
+    asks: Vec<[u32; 2]>,
+    last_update_id: String,
 }
 
 pub struct OrderBook {
@@ -41,13 +65,17 @@ impl OrderBook {
 
     pub fn broadcast_depth(&self) {
         let depth = self.get_depth(10);
-        let msg = serde_json::to_string(&json!({
-            "type": "depth_update",
-            "depth": depth
-        }))
-        .unwrap();
+        let packet = DepthUpdate {
+            msg_type: "depth_update",
+            depth: WireDepth {
+                bids: depth.bids.clone(),
+                asks: depth.asks.clone(),
+                last_update_id: depth.lastUpdateId.clone(),
+            },
+        };
 
-        self.broadcaster.broadcast(&msg);
+        let encoded = wincode::serialize(&packet).expect("serialize depth");
+        self.broadcaster.broadcast_bytes(&encoded);
     }
 
     pub fn match_limit_order(&mut self, mut order: Order) {
@@ -87,24 +115,17 @@ impl OrderBook {
                     traded_qty,
                 });
 
-                #[cfg(debug_assertions)]
-                println!(
-                    "Matched: {} {:?} @{} (maker={}, taker={})",
-                    traded_qty, order.side, price, resting_order.order_id, order.order_id
-                );
+                let trade_msg = TradeMsg {
+                    msg_type: "trade",
+                    price,
+                    quantity: traded_qty,
+                    maker_order_id: resting_order.order_id,
+                    taker_order_id: order.order_id,
+                    timestamp: Utc::now().timestamp_millis(),
+                };
 
-                let trade_msg = json!({
-                    "type": "trade",
-                    "price": price,
-                    "quantity": traded_qty,
-                    "maker_order_id": resting_order.order_id,
-                    "taker_order_id": order.order_id,
-                    "timestamp": Utc::now().timestamp_millis(),
-                });
-
-                if let Ok(msg) = serde_json::to_string(&trade_msg) {
-                    self.broadcaster.broadcast(&msg);
-                }
+                let encoded = wincode::serialize(&trade_msg).expect("serialize trade");
+                self.broadcaster.broadcast_bytes(&encoded);
 
                 let _ = self.tx.send(PersistEvent::TradeExecuted {
                     trade_id: Uuid::new_v4(),
