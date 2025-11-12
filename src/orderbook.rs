@@ -2,6 +2,7 @@ use crate::inputs::Side;
 use crate::outputs::Depth;
 use crate::persist::PersistEvent;
 use crate::worker::Broadcaster;
+
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -23,7 +24,6 @@ pub struct OrderBook {
     pub bids: BTreeMap<u32, VecDeque<Order>>,
     pub asks: BTreeMap<u32, VecDeque<Order>>,
     pub order_id_map: HashMap<u32, (Side, u32)>,
-    pub next_id: u32,
     pub tx: UnboundedSender<PersistEvent>,
     pub broadcaster: Arc<Broadcaster>,
 }
@@ -34,7 +34,6 @@ impl OrderBook {
             bids: BTreeMap::new(),
             asks: BTreeMap::new(),
             order_id_map: HashMap::new(),
-            next_id: 1,
             tx,
             broadcaster,
         }
@@ -47,6 +46,7 @@ impl OrderBook {
             "depth": depth
         }))
         .unwrap();
+
         self.broadcaster.broadcast(&msg);
     }
 
@@ -56,23 +56,22 @@ impl OrderBook {
             Side::Sell => &mut self.bids,
         };
 
-        let matching_prices: Vec<u32> = match order.side {
-            Side::Buy => book.keys().cloned().filter(|&p| p <= order.price).collect(),
-            Side::Sell => book
-                .keys()
-                .cloned()
-                .rev()
-                .filter(|&p| p >= order.price)
-                .collect(),
+        let price_iter: Vec<u32> = match order.side {
+            Side::Buy => book.range(..=order.price).map(|(&p, _)| p).collect(),
+            Side::Sell => book.range(order.price..).rev().map(|(&p, _)| p).collect(),
         };
 
-        for price in matching_prices {
+        for price in price_iter {
+            if order.quantity == 0 {
+                break;
+            }
+
             let queue = match book.get_mut(&price) {
                 Some(q) => q,
                 None => continue,
             };
 
-            while let Some(mut resting_order) = queue.front_mut() {
+            while let Some(resting_order) = queue.front_mut() {
                 if order.quantity == 0 {
                     break;
                 }
@@ -81,31 +80,31 @@ impl OrderBook {
                 order.quantity -= traded_qty;
                 resting_order.quantity -= traded_qty;
 
+                crate::metrics::TRADES_EXECUTED.inc();
+
                 let _ = self.tx.send(PersistEvent::OrderFilled {
                     order_id: resting_order.order_id,
                     traded_qty,
                 });
 
+                #[cfg(debug_assertions)]
                 println!(
-                    "Matched: {} {:?} {} @price = {} (maker={}, taker={})",
-                    traded_qty,
-                    order.side,
-                    order.user_id,
-                    price,
-                    resting_order.order_id,
-                    order.user_id,
+                    "Matched: {} {:?} @{} (maker={}, taker={})",
+                    traded_qty, order.side, price, resting_order.order_id, order.order_id
                 );
 
-                let trade_msg = serde_json::to_string(&json!({
+                let trade_msg = json!({
                     "type": "trade",
                     "price": price,
                     "quantity": traded_qty,
                     "maker_order_id": resting_order.order_id,
                     "taker_order_id": order.order_id,
                     "timestamp": Utc::now().timestamp_millis(),
-                }))
-                .unwrap();
-                self.broadcaster.broadcast(&trade_msg);
+                });
+
+                if let Ok(msg) = serde_json::to_string(&trade_msg) {
+                    self.broadcaster.broadcast(&msg);
+                }
 
                 let _ = self.tx.send(PersistEvent::TradeExecuted {
                     trade_id: Uuid::new_v4(),
@@ -118,15 +117,13 @@ impl OrderBook {
 
                 if resting_order.quantity == 0 {
                     queue.pop_front();
+                } else {
+                    break;
                 }
             }
 
             if queue.is_empty() {
                 book.remove(&price);
-            }
-
-            if order.quantity == 0 {
-                break;
             }
         }
 
@@ -136,34 +133,12 @@ impl OrderBook {
                 Side::Sell => &mut self.asks,
             };
 
-            side_book
-                .entry(order.price)
-                .or_default()
-                .push_back(order.clone());
             self.order_id_map
                 .insert(order.order_id, (order.side, order.price));
+
             let _ = self.tx.send(PersistEvent::NewOrder(order.clone()));
+            side_book.entry(order.price).or_default().push_back(order);
         }
-
-        self.broadcast_depth();
-    }
-
-    pub fn create_order(&mut self, price: u32, quantity: u32, user_id: u32, side: Side) -> u32 {
-        let order_id = self.next_id;
-        self.next_id += 1;
-
-        let order = Order {
-            order_id,
-            user_id,
-            price,
-            quantity,
-            side,
-        };
-
-        let clone_for_tx = order.clone();
-        self.match_limit_order(order);
-        let _ = self.tx.send(PersistEvent::NewOrder(clone_for_tx));
-        order_id
     }
 
     pub fn delete_order(&mut self, order_id: u32) -> (u32, u32) {
@@ -193,27 +168,27 @@ impl OrderBook {
             .bids
             .iter()
             .rev()
+            .take(depth_limit)
             .map(|(&price, orders)| {
                 let total_qty: u32 = orders.iter().map(|o| o.quantity).sum();
                 [price, total_qty]
             })
-            .take(depth_limit)
             .collect();
 
         let asks = self
             .asks
             .iter()
+            .take(depth_limit)
             .map(|(&price, orders)| {
                 let total_qty: u32 = orders.iter().map(|o| o.quantity).sum();
                 [price, total_qty]
             })
-            .take(depth_limit)
             .collect();
 
         Depth {
             bids,
             asks,
-            lastUpdateId: self.next_id.to_string(),
+            lastUpdateId: "0".to_string(),
         }
     }
 }

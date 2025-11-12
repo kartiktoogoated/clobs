@@ -1,7 +1,12 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, VecDeque};
 
-#[derive(Deserialize, Debug)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum Side {
+    Buy,
+    Sell,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CreateOrderInput {
     pub price: u32,
     pub quantity: u32,
@@ -9,13 +14,7 @@ pub struct CreateOrderInput {
     pub side: Side,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy)]
-pub enum Side {
-    Buy,
-    Sell,
-}
-
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DeleteOrder {
     pub order_id: String,
 }

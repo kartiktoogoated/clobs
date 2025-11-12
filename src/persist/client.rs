@@ -101,14 +101,28 @@ impl ScyllaClient {
     pub async fn mark_filled(
         &self,
         order_id: u32,
-        qty: u32,
+        traded_qty: u32,
     ) -> Result<(), scylla::transport::errors::QueryError> {
-        self.session
+        let result = self
+            .session
             .query(
-                "UPDATE clob.orders SET quantity = quantity - ? WHERE order_id = ?;",
-                (qty as i32, order_id as i32),
+                "SELECT quantity FROM clob.orders WHERE order_id = ?;",
+                (order_id as i32,),
             )
             .await?;
+
+        if let Some(row) = result.rows.and_then(|mut r| r.pop()) {
+            let current_qty: i32 = row.columns[0].as_ref().unwrap().as_int().unwrap();
+            let new_qty = std::cmp::max(0, current_qty - traded_qty as i32);
+
+            self.session
+                .query(
+                    "UPDATE clob.orders SET quantity = ? WHERE order_id = ?;",
+                    (new_qty, order_id as i32),
+                )
+                .await?;
+        }
+
         Ok(())
     }
 
