@@ -35,7 +35,8 @@ async fn main() -> std::io::Result<()> {
     let (tx_persist, rx_persist) = mpsc::unbounded_channel::<PersistEvent>();
     start_persistence_worker(rx_persist, scylla).await;
 
-    let broadcaster = Arc::new(Broadcaster::new());
+    let broadcaster = Broadcaster::new();
+    let broadcaster_arc = Arc::new(broadcaster.clone());
 
     let depth_snapshot = Arc::new(RwLock::new(Depth {
         bids: vec![],
@@ -66,7 +67,7 @@ async fn main() -> std::io::Result<()> {
 
     let order_sender = Arc::new(order_tx);
 
-    start_matching_loop(order_cons, match_prod, tx_persist, broadcaster.clone()).await;
+    start_matching_loop(order_cons, match_prod, tx_persist, broadcaster_arc.clone()).await;
 
     HttpServer::new(move || {
         App::new()
