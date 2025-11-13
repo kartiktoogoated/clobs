@@ -3,6 +3,7 @@ use lazy_static::lazy_static;
 use prometheus::{
     Encoder, Histogram, IntCounter, TextEncoder, register_histogram, register_int_counter,
 };
+use prometheus::{IntGauge, register_int_gauge};
 use std::thread;
 use std::time::Duration;
 
@@ -31,7 +32,7 @@ lazy_static! {
     pub static ref TRADES_EXECUTED: IntCounter =
         register_int_counter!("trades_executed_total", "Total trades executed")
             .expect("failed to register TRADES_EXECUTED");
-    pub static ref CHANNEL_BUFFER_SIZE: IntCounter = register_int_counter!(
+    pub static ref CHANNEL_BUFFER_SIZE: IntGauge = register_int_gauge!(
         "order_channel_buffer_size",
         "Current orders in channel buffer"
     )
