@@ -1,11 +1,13 @@
 use actix_web::{App, HttpServer, web::Data};
+use parking_lot::RwLock;
 use ringbuf::HeapRb;
-use ringbuf::traits::{Producer, Split};
+use ringbuf::traits::Producer;
+use ringbuf::traits::Split;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::mpsc;
 
-use crate::events::{MatchEvent, OrderEvent};
+use crate::events::OrderEvent;
 use crate::matching_loop::start_matching_loop;
 use crate::metrics::start_console_metrics_printer;
 use crate::outputs::Depth;
@@ -45,29 +47,38 @@ async fn main() -> std::io::Result<()> {
     }));
 
     let (order_tx, mut order_rx) = mpsc::unbounded_channel::<OrderEvent>();
+    let order_sender = Arc::new(order_tx);
 
     let order_rb = HeapRb::<OrderEvent>::new(65536);
-    let match_rb = HeapRb::<MatchEvent>::new(32768);
-
     let (mut order_prod, order_cons) = order_rb.split();
-    let (match_prod, match_cons) = match_rb.split();
 
     tokio::spawn(async move {
         while let Some(event) = order_rx.recv().await {
             loop {
-                match order_prod.try_push(event) {
-                    Ok(_) => break,
-                    Err(returned_event) => {
-                        tokio::task::yield_now().await;
-                    }
+                if order_prod.try_push(event).is_ok() {
+                    break;
                 }
+                tokio::task::yield_now().await;
             }
         }
     });
 
-    let order_sender = Arc::new(order_tx);
+    {
+        let depth_snapshot = depth_snapshot.clone();
+        let broadcaster_arc = broadcaster_arc.clone();
+        let tx_persist = tx_persist.clone();
 
-    start_matching_loop(order_cons, match_prod, tx_persist, broadcaster_arc.clone()).await;
+        tokio::spawn(async move {
+            start_matching_loop(
+                order_cons,
+                tx_persist,
+                broadcaster_arc,
+                depth_snapshot,
+                "BTC-USDT".to_string(),
+            )
+            .await;
+        });
+    }
 
     HttpServer::new(move || {
         App::new()

@@ -2,11 +2,12 @@ use actix_web::{
     HttpRequest, HttpResponse, Responder, delete, get, post,
     web::{self, Data},
 };
+use parking_lot::RwLock;
 use prometheus::{Encoder, TextEncoder};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::mpsc;
 
 use crate::{
     ORDER_ID_COUNTER,
@@ -22,6 +23,14 @@ type OrderSender = Arc<mpsc::UnboundedSender<OrderEvent>>;
 fn is_msgpack(req: &HttpRequest) -> bool {
     req.headers()
         .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.contains("msgpack"))
+        .unwrap_or(false)
+}
+
+fn wants_msgpack(req: &HttpRequest) -> bool {
+    req.headers()
+        .get("accept")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.contains("msgpack"))
         .unwrap_or(false)
@@ -46,9 +55,7 @@ pub async fn create_order(
     } else {
         match serde_json::from_slice(&body) {
             Ok(data) => data,
-            Err(e) => {
-                return HttpResponse::BadRequest().body(format!("Invalid JSON: {}", e));
-            }
+            Err(e) => return HttpResponse::BadRequest().body(format!("Invalid JSON: {}", e)),
         }
     };
 
@@ -65,7 +72,6 @@ pub async fn create_order(
     match sender.send(event) {
         Ok(_) => {
             HTTP_LATENCY_MS.observe(start.elapsed().as_secs_f64() * 1000.0);
-
             let response = CreateOrderResponse {
                 order_id: order_id.to_string(),
             };
@@ -99,9 +105,7 @@ pub async fn delete_order(
     } else {
         match serde_json::from_slice(&body) {
             Ok(data) => data,
-            Err(e) => {
-                return HttpResponse::BadRequest().body(format!("Invalid JSON: {}", e));
-            }
+            Err(e) => return HttpResponse::BadRequest().body(format!("Invalid JSON: {}", e)),
         }
     };
 
@@ -111,7 +115,6 @@ pub async fn delete_order(
     match sender.send(event) {
         Ok(_) => {
             HTTP_LATENCY_MS.observe(start.elapsed().as_secs_f64() * 1000.0);
-
             let response = DeleteOrderResponse {
                 filled_qty: 0,
                 average_price: 0,
@@ -132,26 +135,28 @@ pub async fn get_depth(req: HttpRequest, depth: Data<Arc<RwLock<Depth>>>) -> imp
     let start = Instant::now();
     HTTP_REQUESTS_TOTAL.inc();
 
-    let response = {
-        let d = depth.read().await;
-        Depth {
-            bids: d.bids.clone(),
-            asks: d.asks.clone(),
-            lastUpdateId: d.lastUpdateId.clone(),
-        }
+    let d = depth.read();
+    let response = Depth {
+        bids: d.bids.clone(),
+        asks: d.asks.clone(),
+        lastUpdateId: d.lastUpdateId.clone(),
     };
+    drop(d); // Release the lock before serialization
 
     HTTP_LATENCY_MS.observe(start.elapsed().as_secs_f64() * 1000.0);
 
-    let wants_msgpack = req
-        .headers()
-        .get("accept")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.contains("msgpack"))
-        .unwrap_or(false);
-
-    if wants_msgpack {
-        response.msgpack()
+    if wants_msgpack(&req) {
+        // Serialize to MessagePack and return as binary response
+        match rmp_serde::to_vec(&response) {
+            Ok(bytes) => HttpResponse::Ok()
+                .content_type("application/msgpack")
+                .body(bytes),
+            Err(e) => {
+                eprintln!("Failed to serialize depth to MessagePack: {}", e);
+                // Fallback to JSON on serialization error
+                HttpResponse::Ok().json(response)
+            }
+        }
     } else {
         HttpResponse::Ok().json(response)
     }
@@ -163,8 +168,7 @@ pub async fn metrics_endpoint() -> impl Responder {
     let metric_families = prometheus::gather();
     let mut buffer = Vec::new();
 
-    if let Err(e) = encoder.encode(&metric_families, &mut buffer) {
-        eprintln!("[Metrics] Encoding error: {:?}", e);
+    if encoder.encode(&metric_families, &mut buffer).is_err() {
         return HttpResponse::InternalServerError().finish();
     }
 

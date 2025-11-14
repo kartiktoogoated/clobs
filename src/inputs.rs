@@ -19,3 +19,12 @@ pub struct CreateOrderInput {
 pub struct DeleteOrder {
     pub order_id: String,
 }
+impl From<&str> for Side {
+    fn from(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "buy" => Side::Buy,
+            "sell" => Side::Sell,
+            _ => panic!("invalid side"),
+        }
+    }
+}
