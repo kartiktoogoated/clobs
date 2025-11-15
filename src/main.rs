@@ -4,7 +4,7 @@ use ringbuf::HeapRb;
 use ringbuf::traits::Producer;
 use ringbuf::traits::Split;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::AtomicU32;
 use tokio::sync::mpsc;
 
 use crate::events::OrderEvent;
@@ -43,7 +43,7 @@ async fn main() -> std::io::Result<()> {
     let depth_snapshot = Arc::new(RwLock::new(Depth {
         bids: vec![],
         asks: vec![],
-        lastUpdateId: "0".to_string(),
+        last_update_id: "0".to_string(),
     }));
 
     let (order_tx, mut order_rx) = mpsc::unbounded_channel::<OrderEvent>();

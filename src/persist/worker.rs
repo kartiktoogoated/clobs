@@ -1,4 +1,4 @@
-use crate::persist::client::{self, ScyllaClient};
+use crate::persist::client::ScyllaClient;
 use crate::persist::event::PersistEvent;
 use tokio::sync::mpsc::UnboundedReceiver;
 

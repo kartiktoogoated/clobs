@@ -9,13 +9,12 @@ pub async fn start_kafka_producer_worker(
 ) {
     tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
-            match serde_json::to_string(&event) {
+            match wincode::serialize(&event) {
                 Ok(payload) => {
                     let topic = match event {
                         PersistEvent::TradeExecuted { .. } => "trades",
                         _ => "orders",
                     };
-
                     if let Err((e, _)) = producer
                         .send(
                             FutureRecord::to(topic).payload(&payload).key("clob-event"),

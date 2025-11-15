@@ -18,21 +18,13 @@ pub async fn start_kafka_consumer_worker(scylla: ScyllaClient) {
 
     while let Ok(msg) = consumer.recv().await {
         if let Some(payload_bytes) = msg.payload() {
-            match std::str::from_utf8(payload_bytes) {
-                Ok(payload) => match serde_json::from_str::<PersistEvent>(payload) {
-                    Ok(event) => {
-                        println!("[KAFKA CONSUMER] Processing event: {:?}", event);
-                        scylla.handle_event(event).await;
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "[KAFKA CONSUMER] Invalid JSON payload: {:?}, error: {:?}",
-                            payload, e
-                        );
-                    }
-                },
+            match wincode::deserialize::<PersistEvent>(payload_bytes) {
+                Ok(event) => {
+                    println!("[KAFKA CONSUMER] Processing event: {:?}", event);
+                    scylla.handle_event(event).await;
+                }
                 Err(e) => {
-                    eprintln!("[KAFKA CONSUMER] UTF-8 decode error: {:?}", e);
+                    eprintln!("[KAFKA CONSUMER] Deserialization error: {:?}", e);
                 }
             }
         } else {

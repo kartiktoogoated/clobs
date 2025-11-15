@@ -1,8 +1,7 @@
 use crate::inputs::Side;
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
+use wincode_derive::{SchemaRead, SchemaWrite};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, SchemaWrite, SchemaRead)]
 pub enum OrderEvent {
     NewOrder {
         order_id: u32,
@@ -16,10 +15,10 @@ pub enum OrderEvent {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, SchemaWrite, SchemaRead)]
 pub enum MatchEvent {
     Trade {
-        trade_id: Uuid,
+        trade_id: [u8; 16],
         price: u32,
         quantity: u32,
         maker_order_id: u32,

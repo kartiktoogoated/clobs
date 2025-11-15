@@ -6,9 +6,8 @@ use crate::{
     persist::event::PersistEvent,
     worker::Broadcaster,
 };
-use ringbuf::traits::Observer;
-
 use parking_lot::RwLock;
+use ringbuf::traits::Observer;
 use ringbuf::{HeapCons, traits::Consumer};
 use std::sync::Arc;
 use std::time::Instant;
@@ -19,7 +18,7 @@ pub async fn start_matching_loop(
     tx_persist: UnboundedSender<PersistEvent>,
     broadcaster: Arc<Broadcaster>,
     depth_snapshot: Arc<RwLock<Depth>>,
-    market: String,
+    _market: String,
 ) {
     let mut orderbook = OrderBook::new(tx_persist.clone(), broadcaster.clone());
     let mut events_processed = 0u64;
@@ -49,14 +48,16 @@ pub async fn start_matching_loop(
                         ORDERS_MATCHED_TOTAL.inc();
                     }
                     OrderEvent::DeleteOrder { order_id } => {
-                        let _ = orderbook.delete_order(order_id);
+                        orderbook.delete_order(order_id);
                     }
                 }
+
                 events_processed += 1;
 
                 if events_processed % 100 == 0 {
-                    update_depth_snapshot(&orderbook, &depth_snapshot);
+                    update_depth_snapshot(&mut orderbook, &depth_snapshot);
                 }
+
                 MATCHING_LATENCY_MS.observe(start.elapsed().as_secs_f64() * 1000.0);
                 CHANNEL_BUFFER_SIZE.set(order_rx.occupied_len() as i64);
             }
@@ -64,7 +65,7 @@ pub async fn start_matching_loop(
                 idle_iterations += 1;
 
                 if idle_iterations == 1 {
-                    update_depth_snapshot(&orderbook, &depth_snapshot);
+                    update_depth_snapshot(&mut orderbook, &depth_snapshot);
                 }
 
                 if idle_iterations < 1000 {
@@ -79,10 +80,10 @@ pub async fn start_matching_loop(
 }
 
 #[inline]
-fn update_depth_snapshot(orderbook: &OrderBook, depth_snapshot: &Arc<RwLock<Depth>>) {
+fn update_depth_snapshot(orderbook: &mut OrderBook, depth_snapshot: &Arc<RwLock<Depth>>) {
     let depth = orderbook.get_depth(10);
     let mut snapshot = depth_snapshot.write();
     snapshot.bids = depth.bids;
     snapshot.asks = depth.asks;
-    snapshot.lastUpdateId = depth.lastUpdateId;
+    snapshot.last_update_id = depth.last_update_id;
 }

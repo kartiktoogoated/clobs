@@ -7,7 +7,7 @@ pub enum Side {
     Sell,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, SchemaWrite, SchemaRead)]
 pub struct CreateOrderInput {
     pub price: u32,
     pub quantity: u32,
@@ -15,16 +15,17 @@ pub struct CreateOrderInput {
     pub side: Side,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, SchemaWrite, SchemaRead)]
 pub struct DeleteOrder {
-    pub order_id: String,
+    pub order_id: u32,
 }
+
 impl From<&str> for Side {
     fn from(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "buy" => Side::Buy,
             "sell" => Side::Sell,
-            _ => panic!("invalid side"),
+            _ => Side::Buy,
         }
     }
 }

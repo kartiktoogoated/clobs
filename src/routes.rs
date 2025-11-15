@@ -28,11 +28,27 @@ fn is_msgpack(req: &HttpRequest) -> bool {
         .unwrap_or(false)
 }
 
+fn is_wincode(req: &HttpRequest) -> bool {
+    req.headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.contains("application/octet-stream") || s.contains("wincode"))
+        .unwrap_or(false)
+}
+
 fn wants_msgpack(req: &HttpRequest) -> bool {
     req.headers()
         .get("accept")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.contains("msgpack"))
+        .unwrap_or(false)
+}
+
+fn wants_wincode(req: &HttpRequest) -> bool {
+    req.headers()
+        .get("accept")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.contains("application/octet-stream") || s.contains("wincode"))
         .unwrap_or(false)
 }
 
@@ -45,7 +61,14 @@ pub async fn create_order(
     let start = Instant::now();
     HTTP_REQUESTS_TOTAL.inc();
 
-    let input: CreateOrderInput = if is_msgpack(&req) {
+    let input: CreateOrderInput = if is_wincode(&req) {
+        match wincode::deserialize::<CreateOrderInput>(&body) {
+            Ok(data) => data,
+            Err(e) => {
+                return HttpResponse::BadRequest().body(format!("Invalid wincode: {:?}", e));
+            }
+        }
+    } else if is_msgpack(&req) {
         match rmp_serde::from_slice(&body) {
             Ok(data) => data,
             Err(e) => {
@@ -76,7 +99,14 @@ pub async fn create_order(
                 order_id: order_id.to_string(),
             };
 
-            if is_msgpack(&req) {
+            if wants_wincode(&req) {
+                match wincode::serialize(&response) {
+                    Ok(bytes) => HttpResponse::Ok()
+                        .content_type("application/octet-stream")
+                        .body(bytes),
+                    Err(_) => HttpResponse::Ok().json(response),
+                }
+            } else if is_msgpack(&req) {
                 response.msgpack()
             } else {
                 HttpResponse::Ok().json(response)
@@ -95,7 +125,14 @@ pub async fn delete_order(
     let start = Instant::now();
     HTTP_REQUESTS_TOTAL.inc();
 
-    let input: DeleteOrder = if is_msgpack(&req) {
+    let input: DeleteOrder = if is_wincode(&req) {
+        match wincode::deserialize::<DeleteOrder>(&body) {
+            Ok(data) => data,
+            Err(e) => {
+                return HttpResponse::BadRequest().body(format!("Invalid wincode: {:?}", e));
+            }
+        }
+    } else if is_msgpack(&req) {
         match rmp_serde::from_slice(&body) {
             Ok(data) => data,
             Err(e) => {
@@ -109,7 +146,7 @@ pub async fn delete_order(
         }
     };
 
-    let order_id = input.order_id.parse::<u32>().unwrap_or(0);
+    let order_id = input.order_id;
     let event = OrderEvent::DeleteOrder { order_id };
 
     match sender.send(event) {
@@ -120,7 +157,14 @@ pub async fn delete_order(
                 average_price: 0,
             };
 
-            if is_msgpack(&req) {
+            if wants_wincode(&req) {
+                match wincode::serialize(&response) {
+                    Ok(bytes) => HttpResponse::Ok()
+                        .content_type("application/octet-stream")
+                        .body(bytes),
+                    Err(_) => HttpResponse::Accepted().json(response),
+                }
+            } else if is_msgpack(&req) {
                 response.msgpack()
             } else {
                 HttpResponse::Accepted().json(response)
@@ -139,21 +183,29 @@ pub async fn get_depth(req: HttpRequest, depth: Data<Arc<RwLock<Depth>>>) -> imp
     let response = Depth {
         bids: d.bids.clone(),
         asks: d.asks.clone(),
-        lastUpdateId: d.lastUpdateId.clone(),
+        last_update_id: d.last_update_id.clone(),
     };
-    drop(d); // Release the lock before serialization
+    drop(d);
 
     HTTP_LATENCY_MS.observe(start.elapsed().as_secs_f64() * 1000.0);
 
-    if wants_msgpack(&req) {
-        // Serialize to MessagePack and return as binary response
+    if wants_wincode(&req) {
+        match wincode::serialize(&response) {
+            Ok(bytes) => HttpResponse::Ok()
+                .content_type("application/octet-stream")
+                .body(bytes),
+            Err(e) => {
+                eprintln!("Failed to serialize depth to wincode: {:?}", e);
+                HttpResponse::Ok().json(response)
+            }
+        }
+    } else if wants_msgpack(&req) {
         match rmp_serde::to_vec(&response) {
             Ok(bytes) => HttpResponse::Ok()
                 .content_type("application/msgpack")
                 .body(bytes),
             Err(e) => {
                 eprintln!("Failed to serialize depth to MessagePack: {}", e);
-                // Fallback to JSON on serialization error
                 HttpResponse::Ok().json(response)
             }
         }

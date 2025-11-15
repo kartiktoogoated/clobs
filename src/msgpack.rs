@@ -1,8 +1,4 @@
-use actix_web::{
-    FromRequest, HttpRequest, HttpResponse,
-    dev::Payload,
-    error::{ErrorBadRequest, ErrorInternalServerError},
-};
+use actix_web::{FromRequest, HttpRequest, HttpResponse, dev::Payload, error::ErrorBadRequest};
 use bytes::BytesMut;
 use futures::StreamExt;
 use serde::{Serialize, de::DeserializeOwned};
@@ -45,7 +41,7 @@ impl<T: DeserializeOwned + 'static> FromRequest for MsgPack<T> {
     type Error = actix_web::Error;
     type Future = Pin<Box<dyn Future<Output = Result<Self, Self::Error>>>>;
 
-    fn from_request(req: &HttpRequest, payload: &mut Payload) -> Self::Future {
+    fn from_request(_req: &HttpRequest, payload: &mut Payload) -> Self::Future {
         let mut payload = payload.take();
 
         Box::pin(async move {

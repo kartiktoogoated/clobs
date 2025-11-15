@@ -128,13 +128,15 @@ impl ScyllaClient {
 
     pub async fn insert_trade(
         &self,
-        trade_id: Uuid,
+        trade_id: [u8; 16],
         price: u32,
         quantity: u32,
         maker_order_id: u32,
         taker_order_id: u32,
         timestamp: i64,
     ) -> Result<(), scylla::transport::errors::QueryError> {
+        let trade_id = Uuid::from_bytes(trade_id);
+
         self.session
             .query(
                 "INSERT INTO clob.trades (trade_id, price, quantity, maker_order_id, taker_order_id, timestamp) \
