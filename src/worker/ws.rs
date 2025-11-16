@@ -7,6 +7,12 @@ pub struct Broadcaster {
     clients: Arc<Mutex<Vec<Recipient<WsMessage>>>>,
 }
 
+impl Default for Broadcaster {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Broadcaster {
     pub fn new() -> Self {
         Self {
@@ -16,14 +22,14 @@ impl Broadcaster {
     pub fn broadcast(&self, msg: &str) {
         let clients = self.clients.lock().unwrap();
         for client in clients.iter() {
-            let _ = client.do_send(WsMessage::Text(msg.to_owned()));
+            client.do_send(WsMessage::Text(msg.to_owned()));
         }
     }
 
     pub fn broadcast_bytes(&self, data: &[u8]) {
         let clients = self.clients.lock().unwrap();
         for client in clients.iter() {
-            let _ = client.do_send(WsMessage::Binary(data.to_vec()));
+            client.do_send(WsMessage::Binary(data.to_vec()));
         }
     }
 }
@@ -54,10 +60,10 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsSession {
         msg: Result<ws::Message, ws::ProtocolError>,
         ctx: &mut ws::WebsocketContext<Self>,
     ) {
-        if let Ok(ws::Message::Text(text)) = msg {
-            if text == "ping" {
-                ctx.text("pong");
-            }
+        if let Ok(ws::Message::Text(text)) = msg
+            && text == "ping"
+        {
+            ctx.text("pong");
         }
     }
 }

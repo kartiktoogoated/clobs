@@ -54,7 +54,7 @@ pub async fn start_matching_loop(
 
                 events_processed += 1;
 
-                if events_processed % 100 == 0 {
+                if events_processed.is_multiple_of(100) {
                     update_depth_snapshot(&mut orderbook, &depth_snapshot);
                 }
 
