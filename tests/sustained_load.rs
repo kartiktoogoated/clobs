@@ -46,6 +46,10 @@ impl Stats {
         println!("\n========== CLIENT-SIDE MEASUREMENTS ==========");
         println!("Total Requests:   {}", total);
         println!("Failed Requests:  {}", self.failed);
+        println!(
+            "Failure Rate:     {:.3}%",
+            (self.failed as f64 / total as f64) * 100.0
+        );
         println!("Average Latency:  {:.2} ms", avg);
         println!("P50:              {:.2} ms", p50);
         println!("P95:              {:.2} ms", p95);
@@ -141,25 +145,26 @@ async fn fetch_server_metrics(client: &Client) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
-async fn msgpack_stress_test_with_cpu() {
+async fn msgpack_sustained_load_test() {
     let base_url = "http://127.0.0.1:8080";
-    let total_requests = 1_000_000;
-    let concurrency = 4_000;
+    let duration_secs = 60;
+    let concurrency = 2_500;
 
     let client = Arc::new(
         Client::builder()
-            .pool_max_idle_per_host(200)
-            .pool_idle_timeout(Duration::from_secs(90))
+            .pool_max_idle_per_host(500)
+            .pool_idle_timeout(Duration::from_secs(120))
+            .tcp_keepalive(Duration::from_secs(60))
             .build()
             .unwrap(),
     );
     let stats = Arc::new(Mutex::new(Stats::default()));
     let stop = Arc::new(Mutex::new(false));
 
-    println!("\n========== MessagePack Stress Test ==========");
-    println!("Total Requests:  {}", total_requests);
+    println!("\n========== Sustained Load Test ==========");
+    println!("Duration:        {}s", duration_secs);
     println!("Concurrency:     {}", concurrency);
-    println!("=============================================\n");
+    println!("=========================================\n");
 
     let stop_monitor = stop.clone();
     tokio::spawn(async move {
@@ -172,14 +177,22 @@ async fn msgpack_stress_test_with_cpu() {
     for i in 0..concurrency {
         let client = client.clone();
         let stats = stats.clone();
+        let stop_clone = stop.clone();
 
         handles.push(tokio::spawn(async move {
-            for j in 0..(total_requests / concurrency) {
+            let mut counter = 0u32;
+
+            while !*stop_clone.lock().await {
                 let start_op = Instant::now();
-                let side = if (i + j) % 2 == 0 { "Buy" } else { "Sell" };
-                let price = 10000 + ((i * j) % 2000);
-                let qty = 1 + ((i + j) % 20);
+                let side = if (i + counter) % 2 == 0 {
+                    "Buy"
+                } else {
+                    "Sell"
+                };
+                let price = 10000 + ((i * counter) % 2000);
+                let qty = 1 + ((i + counter) % 20);
                 let user_id = 1000 + (i % 1000);
+
                 let input = CreateOrderInput {
                     price,
                     quantity: qty,
@@ -200,23 +213,27 @@ async fn msgpack_stress_test_with_cpu() {
 
                 let elapsed = start_op.elapsed().as_secs_f64() * 1000.0;
                 stats.lock().await.record(elapsed, ok);
+
+                counter += 1;
             }
         }));
     }
 
+    tokio::time::sleep(Duration::from_secs(duration_secs)).await;
+    *stop.lock().await = true;
+
     for h in handles {
         let _ = h.await;
     }
-
-    *stop.lock().await = true;
 
     let total_time = start_time.elapsed().as_secs_f64();
     let total_done = stats.lock().await.total;
     let rps = total_done as f64 / total_time;
 
     println!("\n========== TEST SUMMARY ==========");
-    println!("Total Time:   {:.2}s", total_time);
-    println!("Throughput:   {:.2} req/sec", rps);
+    println!("Total Time:     {:.2}s", total_time);
+    println!("Total Requests: {}", total_done);
+    println!("Throughput:     {:.2} req/sec", rps);
     println!("==================================");
 
     stats.lock().await.summarize();

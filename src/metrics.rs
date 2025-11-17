@@ -1,9 +1,10 @@
 use actix_web::{HttpResponse, Responder, get};
 use lazy_static::lazy_static;
 use prometheus::{
-    Encoder, Histogram, IntCounter, TextEncoder, register_histogram, register_int_counter,
+    Encoder, Histogram, IntCounter, IntGauge, TextEncoder, register_histogram,
+    register_int_counter, register_int_gauge,
 };
-use prometheus::{IntGauge, register_int_gauge};
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 
@@ -37,6 +38,9 @@ lazy_static! {
         "Current orders in channel buffer"
     )
     .expect("failed to register CHANNEL_BUFFER_SIZE");
+    pub static ref HTTP_RTT_MS: Histogram =
+        register_histogram!("http_rtt_ms", "Full HTTP round trip latency (ms)")
+            .expect("failed to register HTTP_RTT_MS");
 }
 
 #[get("/metrics")]
@@ -61,9 +65,27 @@ pub fn start_console_metrics_printer() {
     let depth = DEPTH_UPDATES.clone();
     let http_latency = HTTP_LATENCY_MS.clone();
     let matching_latency = MATCHING_LATENCY_MS.clone();
+    let buffer = CHANNEL_BUFFER_SIZE.clone();
 
     thread::spawn(move || {
+        let mut prev_http_count = 0u64;
+        let mut prev_orders = 0u64;
+        let mut prev_lat_sum = 0u64;
+        let mut prev_lat_count = 0u64;
+
         loop {
+            thread::sleep(Duration::from_secs(5));
+
+            let current_http = http_count.get();
+            let current_orders = orders_matched.get();
+            let current_trades = trades.get();
+            let current_depth = depth.get();
+            let current_buffer = buffer.get();
+
+            let delta_http = current_http.saturating_sub(prev_http_count);
+            let delta_orders = current_orders.saturating_sub(prev_orders);
+            let throughput_per_sec = delta_http as f64 / 5.0;
+
             let http_samples = http_latency.get_sample_count();
             let avg_http_latency = if http_samples > 0 {
                 http_latency.get_sample_sum() / http_samples as f64
@@ -78,17 +100,43 @@ pub fn start_console_metrics_printer() {
                 0.0
             };
 
+            use crate::middleware::latency::{REAL_LAT_COUNT, REAL_LAT_SUM_US};
+
+            let current_lat_count = REAL_LAT_COUNT.load(Ordering::Relaxed);
+            let current_lat_sum = REAL_LAT_SUM_US.load(Ordering::Relaxed);
+
+            let delta_lat_count = current_lat_count.saturating_sub(prev_lat_count);
+            let delta_lat_sum = current_lat_sum.saturating_sub(prev_lat_sum);
+
+            let realtime_latency_ms = if delta_lat_count > 0 {
+                (delta_lat_sum as f64 / delta_lat_count as f64) / 1000.0
+            } else {
+                0.0
+            };
+
+            println!("\n[Metrics - Last 5s]");
             println!(
-                "[Metrics] http_reqs={} orders_matched={} trades={} depth_updates={} | http_lat={:.3}ms matching_lat={:.3}ms",
-                http_count.get(),
-                orders_matched.get(),
-                trades.get(),
-                depth.get(),
-                avg_http_latency,
-                avg_matching_latency * 1000.0,
+                "HTTP Requests: {} | Throughput: {:.0} req/s | Delta Orders: {}",
+                current_http, throughput_per_sec, delta_orders
+            );
+            println!(
+                "Trades: {} | Buffer: {} | Depth Updates: {}",
+                current_trades, current_buffer, current_depth
+            );
+            println!(
+                "Latency (5s window): HTTP {:.3}ms ({:.1}μs)",
+                realtime_latency_ms,
+                realtime_latency_ms * 1000.0
+            );
+            println!(
+                "Latency (cumulative): HTTP {:.3}ms | Matching {:.3}ms",
+                avg_http_latency, avg_matching_latency
             );
 
-            thread::sleep(Duration::from_secs(5));
+            prev_http_count = current_http;
+            prev_orders = current_orders;
+            prev_lat_sum = current_lat_sum;
+            prev_lat_count = current_lat_count;
         }
     });
 }

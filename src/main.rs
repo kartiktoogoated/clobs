@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use crate::events::OrderEvent;
 use crate::matching_loop::start_matching_loop;
 use crate::metrics::start_console_metrics_printer;
+use crate::middleware::latency::RealLatency;
 use crate::outputs::Depth;
 use crate::persist::{client::ScyllaClient, event::PersistEvent, worker::start_persistence_worker};
 use crate::routes::{create_order, delete_order, get_depth, metrics_endpoint};
@@ -20,6 +21,7 @@ pub mod inputs;
 pub mod kafka_worker;
 pub mod matching_loop;
 pub mod metrics;
+pub mod middleware;
 pub mod msgpack;
 pub mod orderbook;
 pub mod outputs;
@@ -49,16 +51,31 @@ async fn main() -> std::io::Result<()> {
     let (order_tx, mut order_rx) = mpsc::unbounded_channel::<OrderEvent>();
     let order_sender = Arc::new(order_tx);
 
-    let order_rb = HeapRb::<OrderEvent>::new(65536);
+    let order_rb = HeapRb::<OrderEvent>::new(524_288);
     let (mut order_prod, order_cons) = order_rb.split();
 
     tokio::spawn(async move {
-        while let Some(event) = order_rx.recv().await {
-            loop {
-                if order_prod.try_push(event).is_ok() {
-                    break;
+        let mut batch = Vec::with_capacity(256);
+
+        loop {
+            match order_rx.recv().await {
+                Some(first_event) => {
+                    batch.push(first_event);
+
+                    while batch.len() < 256 {
+                        match order_rx.try_recv() {
+                            Ok(ev) => batch.push(ev),
+                            Err(_) => break,
+                        }
+                    }
+
+                    for ev in batch.drain(..) {
+                        while order_prod.try_push(ev).is_err() {
+                            tokio::task::yield_now().await;
+                        }
+                    }
                 }
-                tokio::task::yield_now().await;
+                None => break,
             }
         }
     });
@@ -82,6 +99,7 @@ async fn main() -> std::io::Result<()> {
 
     HttpServer::new(move || {
         App::new()
+            .wrap(RealLatency)
             .app_data(Data::new(order_sender.clone()))
             .app_data(Data::new(broadcaster.clone()))
             .app_data(Data::new(depth_snapshot.clone()))

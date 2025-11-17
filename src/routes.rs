@@ -6,14 +6,13 @@ use parking_lot::RwLock;
 use prometheus::{Encoder, TextEncoder};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Instant;
 use tokio::sync::mpsc;
 
 use crate::{
     ORDER_ID_COUNTER,
     events::OrderEvent,
     inputs::{CreateOrderInput, DeleteOrder},
-    metrics::{HTTP_LATENCY_MS, HTTP_REQUESTS_TOTAL},
+    metrics::HTTP_REQUESTS_TOTAL,
     msgpack::MsgPackResponse,
     outputs::{CreateOrderResponse, DeleteOrderResponse, Depth},
 };
@@ -58,7 +57,6 @@ pub async fn create_order(
     body: web::Bytes,
     sender: Data<OrderSender>,
 ) -> impl Responder {
-    let start = Instant::now();
     HTTP_REQUESTS_TOTAL.inc();
 
     let input: CreateOrderInput = if is_wincode(&req) {
@@ -82,7 +80,7 @@ pub async fn create_order(
         }
     };
 
-    let order_id = ORDER_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let order_id = ORDER_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
 
     let event = OrderEvent::NewOrder {
         order_id,
@@ -94,7 +92,6 @@ pub async fn create_order(
 
     match sender.send(event) {
         Ok(_) => {
-            HTTP_LATENCY_MS.observe(start.elapsed().as_secs_f64() * 1000.0);
             let response = CreateOrderResponse {
                 order_id: order_id.to_string(),
             };
@@ -122,7 +119,6 @@ pub async fn delete_order(
     body: web::Bytes,
     sender: Data<OrderSender>,
 ) -> impl Responder {
-    let start = Instant::now();
     HTTP_REQUESTS_TOTAL.inc();
 
     let input: DeleteOrder = if is_wincode(&req) {
@@ -151,7 +147,6 @@ pub async fn delete_order(
 
     match sender.send(event) {
         Ok(_) => {
-            HTTP_LATENCY_MS.observe(start.elapsed().as_secs_f64() * 1000.0);
             let response = DeleteOrderResponse {
                 filled_qty: 0,
                 average_price: 0,
@@ -176,7 +171,6 @@ pub async fn delete_order(
 
 #[get("/depth")]
 pub async fn get_depth(req: HttpRequest, depth: Data<Arc<RwLock<Depth>>>) -> impl Responder {
-    let start = Instant::now();
     HTTP_REQUESTS_TOTAL.inc();
 
     let d = depth.read();
@@ -186,8 +180,6 @@ pub async fn get_depth(req: HttpRequest, depth: Data<Arc<RwLock<Depth>>>) -> imp
         last_update_id: d.last_update_id.clone(),
     };
     drop(d);
-
-    HTTP_LATENCY_MS.observe(start.elapsed().as_secs_f64() * 1000.0);
 
     if wants_wincode(&req) {
         match wincode::serialize(&response) {

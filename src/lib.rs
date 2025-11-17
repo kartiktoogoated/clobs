@@ -4,6 +4,7 @@ pub mod inputs;
 pub mod kafka_worker;
 pub mod matching_loop;
 pub mod metrics;
+pub mod middleware;
 pub mod msgpack;
 pub mod orderbook;
 pub mod outputs;

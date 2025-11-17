@@ -27,3 +27,6 @@ wincode = "0.1.2"
 wincode-derive = "0.1.1"
 sysinfo = "0.37.2"
 parking_lot = "0.12.5"
+futures-util = "0.3.31"
+crossbeam = "0.8.4"
+bytemuck = { version = "1.24", features = ["derive"] }
