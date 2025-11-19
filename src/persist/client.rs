@@ -1,19 +1,29 @@
 use crate::orderbook::Order;
 use crate::persist::event::PersistEvent;
-use scylla::{Session, SessionBuilder};
+use scylla::{Session, SessionBuilder, prepared_statement::PreparedStatement};
+use std::sync::Arc;
 use uuid::Uuid;
 
 pub struct ScyllaClient {
     session: Session,
+    insert_order_stmt: Arc<PreparedStatement>,
+    delete_order_stmt: Arc<PreparedStatement>,
+    select_order_stmt: Arc<PreparedStatement>,
+    update_order_stmt: Arc<PreparedStatement>,
+    insert_trade_stmt: Arc<PreparedStatement>,
 }
 
 impl ScyllaClient {
     pub async fn new(uri: &str) -> Self {
-        let session = SessionBuilder::new()
-            .known_node(uri)
-            .build()
-            .await
-            .expect("Failed to connect to ScyllaDB");
+        let session = loop {
+            match SessionBuilder::new().known_node(uri).build().await {
+                Ok(s) => break s,
+                Err(e) => {
+                    eprintln!("[Scylla] Retry in 3s: {:?}", e);
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                }
+            }
+        };
 
         // Ensure keyspace
         session
@@ -40,7 +50,6 @@ impl ScyllaClient {
             .await
             .unwrap();
 
-        // Trades table
         session
             .query(
                 "CREATE TABLE IF NOT EXISTS clob.trades (
@@ -56,8 +65,51 @@ impl ScyllaClient {
             .await
             .unwrap();
 
-        println!("[Scylla] Connected and schema initialized.");
-        Self { session }
+        let insert_order_stmt = Arc::new(
+            session
+                .prepare("INSERT INTO clob.orders (order_id, user_id, price, quantity, side) VALUES (?, ?, ?, ?, ?);")
+                .await
+                .unwrap(),
+        );
+
+        let delete_order_stmt = Arc::new(
+            session
+                .prepare("DELETE FROM clob.orders WHERE order_id = ?;")
+                .await
+                .unwrap(),
+        );
+
+        let select_order_stmt = Arc::new(
+            session
+                .prepare("SELECT quantity FROM clob.orders WHERE order_id = ?;")
+                .await
+                .unwrap(),
+        );
+
+        let update_order_stmt = Arc::new(
+            session
+                .prepare("UPDATE clob.orders SET quantity = ? WHERE order_id = ?;")
+                .await
+                .unwrap(),
+        );
+
+        let insert_trade_stmt = Arc::new(
+            session
+                .prepare("INSERT INTO clob.trades (trade_id, price, quantity, maker_order_id, taker_order_id, timestamp) VALUES (?, ?, ?, ?, ?, ?);")
+                .await
+                .unwrap(),
+        );
+
+        println!("[Scylla] Connected and schema initialized with prepared statements.");
+
+        Self {
+            session,
+            insert_order_stmt,
+            delete_order_stmt,
+            select_order_stmt,
+            update_order_stmt,
+            insert_trade_stmt,
+        }
     }
 
     pub async fn insert_order(
@@ -70,9 +122,8 @@ impl ScyllaClient {
         };
 
         self.session
-            .query(
-                "INSERT INTO clob.orders (order_id, user_id, price, quantity, side) \
-                 VALUES (?, ?, ?, ?, ?);",
+            .execute(
+                &self.insert_order_stmt,
                 (
                     order.order_id as i32,
                     order.user_id as i32,
@@ -90,10 +141,7 @@ impl ScyllaClient {
         order_id: u32,
     ) -> Result<(), scylla::transport::errors::QueryError> {
         self.session
-            .query(
-                "DELETE FROM clob.orders WHERE order_id = ?;",
-                (order_id as i32,),
-            )
+            .execute(&self.delete_order_stmt, (order_id as i32,))
             .await?;
         Ok(())
     }
@@ -105,10 +153,7 @@ impl ScyllaClient {
     ) -> Result<(), scylla::transport::errors::QueryError> {
         let result = self
             .session
-            .query(
-                "SELECT quantity FROM clob.orders WHERE order_id = ?;",
-                (order_id as i32,),
-            )
+            .execute(&self.select_order_stmt, (order_id as i32,))
             .await?;
 
         if let Some(row) = result.rows.and_then(|mut r| r.pop()) {
@@ -116,10 +161,7 @@ impl ScyllaClient {
             let new_qty = std::cmp::max(0, current_qty - traded_qty as i32);
 
             self.session
-                .query(
-                    "UPDATE clob.orders SET quantity = ? WHERE order_id = ?;",
-                    (new_qty, order_id as i32),
-                )
+                .execute(&self.update_order_stmt, (new_qty, order_id as i32))
                 .await?;
         }
 
@@ -138,9 +180,8 @@ impl ScyllaClient {
         let trade_id = Uuid::from_bytes(trade_id);
 
         self.session
-            .query(
-                "INSERT INTO clob.trades (trade_id, price, quantity, maker_order_id, taker_order_id, timestamp) \
-                 VALUES (?, ?, ?, ?, ?, ?);",
+            .execute(
+                &self.insert_trade_stmt,
                 (
                     trade_id,
                     price as i32,
@@ -157,8 +198,11 @@ impl ScyllaClient {
     pub async fn handle_event(&self, event: PersistEvent) {
         match event {
             PersistEvent::NewOrder(order) => {
-                if let Err(e) = self.insert_order(order).await {
-                    eprintln!("[Scylla] Failed to insert order: {:?}", e);
+                if let Err(e) = self.insert_order(order.clone()).await {
+                    eprintln!(
+                        "[Scylla] Failed to insert order {}: {:?}",
+                        order.order_id, e
+                    );
                 }
             }
             PersistEvent::OrderDeleted { order_id } => {
@@ -199,6 +243,12 @@ impl ScyllaClient {
                     eprintln!("[Scylla] Failed to insert trade {:?}: {:?}", trade_id, e);
                 }
             }
+        }
+    }
+
+    pub async fn handle_event_batch(&self, events: Vec<PersistEvent>) {
+        for event in events {
+            self.handle_event(event).await;
         }
     }
 }
