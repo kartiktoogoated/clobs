@@ -1,7 +1,9 @@
+use crate::metrics::ORDER_PROCESSING_LATENCY_MS;
 use chrono::Utc;
 use std::collections::{BTreeMap, HashMap};
 use std::mem::MaybeUninit;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
@@ -135,6 +137,8 @@ impl OrderBook {
     }
 
     pub fn match_limit_order(&mut self, mut taker: Order) {
+        let process_start = Instant::now();
+
         let timestamp = Utc::now().timestamp_millis();
 
         let book = match taker.side {
@@ -211,6 +215,7 @@ impl OrderBook {
 
         self.flush_trades();
         self.depth_cache.dirty = true;
+        ORDER_PROCESSING_LATENCY_MS.observe(process_start.elapsed().as_secs_f64() * 1000.0);
     }
 
     #[inline]

@@ -41,6 +41,14 @@ lazy_static! {
     pub static ref HTTP_RTT_MS: Histogram =
         register_histogram!("http_rtt_ms", "Full HTTP round trip latency (ms)")
             .expect("failed to register HTTP_RTT_MS");
+    pub static ref ORDER_PROCESSING_LATENCY_MS: Histogram = register_histogram!(
+        "order_processing_latency_ms",
+        "Full end-to-end order processing latency (ms)",
+        vec![
+            0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0
+        ]
+    )
+    .unwrap();
 }
 
 #[get("/metrics")]
