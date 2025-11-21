@@ -1,6 +1,7 @@
 pub mod events;
 pub mod inputs;
 
+pub mod error;
 pub mod kafka_worker;
 pub mod matching_loop;
 pub mod metrics;

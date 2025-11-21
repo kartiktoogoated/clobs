@@ -1,5 +1,6 @@
 use actix_web::{HttpResponse, Responder, get};
 use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use prometheus::{
     Encoder, Histogram, IntCounter, IntGauge, TextEncoder, register_histogram,
     register_int_counter, register_int_gauge,
@@ -48,7 +49,20 @@ lazy_static! {
             0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0
         ]
     )
-    .unwrap();
+    .expect("failed to register ORDER_PROCESSING_LATENCY_MS");
+    pub static ref PERSISTENCE_FAILURES: Lazy<IntCounter> = Lazy::new(|| {
+        register_int_counter!("persistence_failures_total", "Total persistence failures").unwrap()
+    });
+    pub static ref BROADCAST_FAILURES: Lazy<IntCounter> = Lazy::new(|| {
+        register_int_counter!("broadcast_failures_total", "Total broadcast failures").unwrap()
+    });
+    pub static ref SERIALIZATION_FAILURES: Lazy<IntCounter> = Lazy::new(|| {
+        register_int_counter!(
+            "serialization_failures_total",
+            "Total serialization failures"
+        )
+        .unwrap()
+    });
 }
 
 #[get("/metrics")]

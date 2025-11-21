@@ -12,6 +12,7 @@ use ringbuf::{HeapCons, traits::Consumer};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
+use tracing::error;
 
 pub async fn start_matching_loop(
     mut order_rx: HeapCons<OrderEvent>,
@@ -38,17 +39,22 @@ pub async fn start_matching_loop(
                         quantity,
                         side,
                     } => {
-                        orderbook.match_limit_order(crate::orderbook::Order {
+                        if let Err(e) = orderbook.match_limit_order(crate::orderbook::Order {
                             order_id,
                             user_id,
                             price,
                             quantity,
                             side,
-                        });
+                        }) {
+                            error!("Failed to match order {}: {}", order_id, e);
+                        }
                         ORDERS_MATCHED_TOTAL.inc();
                     }
+
                     OrderEvent::DeleteOrder { order_id } => {
-                        orderbook.delete_order(order_id);
+                        if let Err(e) = orderbook.delete_order(order_id) {
+                            error!("Failed to delete order {}: {}", order_id, e);
+                        }
                     }
                 }
 
@@ -63,11 +69,9 @@ pub async fn start_matching_loop(
             }
             None => {
                 idle_iterations += 1;
-
                 if idle_iterations == 1 {
                     update_depth_snapshot(&mut orderbook, &depth_snapshot);
                 }
-
                 if idle_iterations < 1000 {
                     std::hint::spin_loop();
                 } else {

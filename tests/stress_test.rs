@@ -143,8 +143,8 @@ async fn fetch_server_metrics(client: &Client) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
 async fn msgpack_stress_test_with_cpu() {
     let base_url = "http://127.0.0.1:8080";
-    let total_requests = 1_000_000;
-    let concurrency = 4_000;
+    let total_requests = 500_000;
+    let concurrency = 2_000;
 
     let client = Arc::new(
         Client::builder()

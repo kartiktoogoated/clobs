@@ -44,10 +44,10 @@ pub async fn start_kafka_consumer_worker(scylla: std::sync::Arc<ScyllaClient>) {
         .expect("Failed to subscribe to topics");
 
     while let Ok(msg) = consumer.recv().await {
-        if let Some(payload) = msg.payload() {
-            if let Ok(event) = wincode::deserialize::<PersistEvent>(payload) {
-                scylla.handle_event(event).await;
-            }
+        if let Some(payload) = msg.payload()
+            && let Ok(event) = wincode::deserialize::<PersistEvent>(payload)
+        {
+            scylla.handle_event(event).await;
         }
     }
 }

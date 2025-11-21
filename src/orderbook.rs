@@ -5,8 +5,10 @@ use std::mem::MaybeUninit;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
+use tracing::{error, warn};
 use uuid::Uuid;
 
+use crate::error::*;
 use crate::inputs::Side;
 use crate::outputs::Depth;
 use crate::persist::PersistEvent;
@@ -21,6 +23,20 @@ pub struct Order {
     pub price: u32,
     pub quantity: u32,
     pub side: Side,
+}
+
+impl Order {
+    pub fn validate(&self) -> Result<()> {
+        if self.price == 0 {
+            return Err(OrderBookError::InvalidOrder("Price cannot be zero".into()));
+        }
+        if self.quantity == 0 {
+            return Err(OrderBookError::InvalidOrder(
+                "Quantity cannot be zero".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 struct OrderLocation {
@@ -59,20 +75,42 @@ impl PriceLevel {
     }
 
     #[inline]
-    unsafe fn remove_fast(&mut self, idx: usize) -> u32 {
+    fn remove_fast(&mut self, idx: usize) -> Result<u32> {
+        if idx >= self.tombstone.len() {
+            return Err(OrderBookError::InvalidOrder(format!(
+                "Index {} out of bounds",
+                idx
+            )));
+        }
+
         let qty = self.quantities[idx];
         if !self.tombstone[idx] {
-            self.total_qty -= qty;
+            self.total_qty = self.total_qty.saturating_sub(qty);
             self.tombstone[idx] = true;
         }
-        qty
+        Ok(qty)
     }
 
     #[inline]
-    unsafe fn reduce_qty(&mut self, idx: usize, new_qty: u32) {
+    fn reduce_qty(&mut self, idx: usize, new_qty: u32) -> Result<()> {
+        if idx >= self.quantities.len() {
+            return Err(OrderBookError::InvalidOrder(format!(
+                "Index {} out of bounds",
+                idx
+            )));
+        }
+
         let old = self.quantities[idx];
+        if new_qty > old {
+            return Err(OrderBookError::InvalidOrder(format!(
+                "New quantity {} exceeds old {}",
+                new_qty, old
+            )));
+        }
+
         self.quantities[idx] = new_qty;
-        self.total_qty = self.total_qty - old + new_qty;
+        self.total_qty = self.total_qty.saturating_sub(old).saturating_add(new_qty);
+        Ok(())
     }
 
     #[inline]
@@ -89,6 +127,15 @@ struct TradeMsg {
     maker_order_id: u32,
     taker_order_id: u32,
     timestamp: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExecutedTrade {
+    pub price: u32,
+    pub quantity: u32,
+    pub maker_order_id: u32,
+    pub taker_order_id: u32,
+    pub timestamp: i64,
 }
 
 struct DepthCache {
@@ -136,50 +183,65 @@ impl OrderBook {
         }
     }
 
-    pub fn match_limit_order(&mut self, mut taker: Order) {
+    pub fn match_limit_order(&mut self, mut taker: Order) -> Result<Vec<ExecutedTrade>> {
         let process_start = Instant::now();
 
-        let timestamp = Utc::now().timestamp_millis();
+        taker.validate()?;
 
-        let book = match taker.side {
-            Side::Buy => &mut self.asks,
-            Side::Sell => &mut self.bids,
-        };
+        let timestamp = Utc::now().timestamp_millis();
+        let mut executed_trades = Vec::new();
+
+        let matching_asks = matches!(taker.side, Side::Buy);
 
         let mut prices_to_remove = Vec::with_capacity(8);
 
-        let range: Box<dyn Iterator<Item = (&u32, &mut PriceLevel)>> = match taker.side {
-            Side::Buy => Box::new(book.range_mut(..=taker.price)),
-            Side::Sell => Box::new(book.range_mut(taker.price..).rev()),
-        };
+        {
+            let book = if matching_asks {
+                &mut self.asks
+            } else {
+                &mut self.bids
+            };
 
-        for (&price, level) in range {
-            if taker.quantity == 0 {
-                break;
-            }
+            let price_keys: Vec<u32> = if matching_asks {
+                book.range(..=taker.price).map(|(p, _)| *p).collect()
+            } else {
+                book.range(taker.price..).rev().map(|(p, _)| *p).collect()
+            };
 
-            let mut idx = 0;
-
-            while idx < level.prices.len() && taker.quantity > 0 {
-                if level.tombstone[idx] {
-                    idx += 1;
-                    continue;
+            for price in price_keys {
+                if taker.quantity == 0 {
+                    break;
                 }
 
-                let maker_id = level.prices[idx];
-                let maker_qty = level.quantities[idx];
-                let traded = taker.quantity.min(maker_qty);
+                let level = match book.get_mut(&price) {
+                    Some(l) => l,
+                    None => continue,
+                };
 
-                taker.quantity -= traded;
+                let mut idx = 0;
 
-                let new_maker_qty = maker_qty - traded;
-                unsafe {
-                    level.reduce_qty(idx, new_maker_qty);
-                }
+                while idx < level.prices.len() && taker.quantity > 0 {
+                    if level.tombstone[idx] {
+                        idx += 1;
+                        continue;
+                    }
 
-                crate::metrics::TRADES_EXECUTED.inc();
+                    let maker_id = level.prices[idx];
+                    let maker_qty = level.quantities[idx];
+                    let traded = taker.quantity.min(maker_qty);
 
-                if self.trade_len < 64 {
+                    taker.quantity -= traded;
+
+                    let new_maker_qty = maker_qty - traded;
+                    level.reduce_qty(idx, new_maker_qty)?;
+
+                    crate::metrics::TRADES_EXECUTED.inc();
+
+                    if self.trade_len >= 64 {
+                        warn!("Trade buffer full");
+                        break;
+                    }
+
                     self.trade_buf[self.trade_len].write(TradeMsg {
                         msg_type: 1,
                         price,
@@ -189,37 +251,51 @@ impl OrderBook {
                         timestamp,
                     });
                     self.trade_len += 1;
-                }
 
-                if new_maker_qty == 0 {
-                    unsafe {
-                        level.remove_fast(idx);
+                    executed_trades.push(ExecutedTrade {
+                        price,
+                        quantity: traded,
+                        maker_order_id: maker_id,
+                        taker_order_id: taker.order_id,
+                        timestamp,
+                    });
+
+                    if new_maker_qty == 0 {
+                        level.remove_fast(idx)?;
+                    } else {
+                        idx += 1;
                     }
-                } else {
-                    idx += 1;
+                }
+
+                if level.is_empty() {
+                    prices_to_remove.push(price);
+                }
+
+                if self.trade_len >= 64 {
+                    break;
                 }
             }
 
-            if level.is_empty() {
-                prices_to_remove.push(price);
+            for price in prices_to_remove {
+                book.remove(&price);
             }
-        }
-
-        for price in prices_to_remove {
-            book.remove(&price);
         }
 
         if taker.quantity > 0 {
-            self.inserting_resting(taker);
+            self.insert_resting_order(taker)?;
         }
 
-        self.flush_trades();
+        self.flush_trades()?;
         self.depth_cache.dirty = true;
         ORDER_PROCESSING_LATENCY_MS.observe(process_start.elapsed().as_secs_f64() * 1000.0);
+
+        Ok(executed_trades)
     }
 
     #[inline]
-    fn inserting_resting(&mut self, order: Order) {
+    fn insert_resting_order(&mut self, order: Order) -> Result<()> {
+        order.validate()?;
+
         let book = match order.side {
             Side::Buy => &mut self.bids,
             Side::Sell => &mut self.asks,
@@ -239,51 +315,81 @@ impl OrderBook {
             },
         );
 
-        let _ = self.tx.send(PersistEvent::NewOrder(order));
+        self.tx.send(PersistEvent::NewOrder(order)).map_err(|e| {
+            error!("Failed to persist order: {}", e);
+            crate::metrics::PERSISTENCE_FAILURES.inc();
+            OrderBookError::PersistenceFailed(format!("Channel send failed: {}", e))
+        })?;
+
+        Ok(())
     }
 
-    pub fn delete_order(&mut self, order_id: u32) {
-        if let Some(loc) = self.order_locations.remove(&order_id) {
-            let book = match loc.side {
-                Side::Buy => &mut self.bids,
-                Side::Sell => &mut self.asks,
-            };
+    pub fn delete_order(&mut self, order_id: u32) -> Result<()> {
+        let loc = self
+            .order_locations
+            .remove(&order_id)
+            .ok_or(OrderBookError::OrderNotFound(order_id))?;
 
-            if let Some(level) = book.get_mut(&loc.price) {
-                unsafe {
-                    level.remove_fast(loc.index);
-                }
+        let book = match loc.side {
+            Side::Buy => &mut self.bids,
+            Side::Sell => &mut self.asks,
+        };
 
-                if level.is_empty() {
-                    book.remove(&loc.price);
-                }
+        if let Some(level) = book.get_mut(&loc.price) {
+            level.remove_fast(loc.index)?;
+
+            if level.is_empty() {
+                book.remove(&loc.price);
             }
         }
+
         self.depth_cache.dirty = true;
+        Ok(())
     }
 
     #[inline]
-    fn flush_trades(&mut self) {
+    fn flush_trades(&mut self) -> Result<()> {
         if self.trade_len == 0 {
-            return;
+            return Ok(());
         }
+
+        let mut last_error: Option<OrderBookError> = None;
 
         for i in 0..self.trade_len {
             let trade = unsafe { self.trade_buf[i].assume_init_read() };
-            if let Ok(encoded) = wincode::serialize(&trade) {
-                self.broadcaster.broadcast_bytes(&encoded);
+
+            match wincode::serialize(&trade) {
+                Ok(encoded) => {
+                    self.broadcaster.broadcast_bytes(&encoded);
+                }
+                Err(e) => {
+                    error!("Serialization failed: {}", e);
+                    crate::metrics::SERIALIZATION_FAILURES.inc();
+                    last_error = Some(OrderBookError::SerializationFailed(e.to_string()));
+                }
             }
 
-            let _ = self.tx.send(PersistEvent::TradeExecuted {
+            if let Err(e) = self.tx.send(PersistEvent::TradeExecuted {
                 trade_id: Uuid::new_v4().into_bytes(),
                 price: trade.price,
                 quantity: trade.quantity,
                 maker_order_id: trade.maker_order_id,
                 taker_order_id: trade.taker_order_id,
                 timestamp: trade.timestamp,
-            });
+            }) {
+                error!("Persistence failed: {}", e);
+                crate::metrics::PERSISTENCE_FAILURES.inc();
+                last_error = Some(OrderBookError::PersistenceFailed(e.to_string()));
+            }
         }
+
         self.trade_len = 0;
+
+        if let Some(err) = last_error {
+            return Err(err);
+        }
+
+        Ok(())
     }
 
     pub fn get_depth(&mut self, limit: usize) -> Depth {
@@ -316,5 +422,34 @@ impl OrderBook {
         }
 
         self.depth_cache.dirty = false;
+    }
+
+    pub fn stats(&self) -> OrderBookStats {
+        OrderBookStats {
+            total_bids: self.bids.len(),
+            total_asks: self.asks.len(),
+            total_orders: self.order_locations.len(),
+            best_bid: self.bids.keys().next_back().copied(),
+            best_ask: self.asks.keys().next().copied(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct OrderBookStats {
+    pub total_bids: usize,
+    pub total_asks: usize,
+    pub total_orders: usize,
+    pub best_bid: Option<u32>,
+    pub best_ask: Option<u32>,
+}
+
+impl Drop for OrderBook {
+    fn drop(&mut self) {
+        if self.trade_len > 0
+            && let Err(e) = self.flush_trades()
+        {
+            error!("Failed to flush trades during drop: {}", e);
+        }
     }
 }
