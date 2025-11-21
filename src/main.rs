@@ -16,6 +16,7 @@ use crate::persist::{client::ScyllaClient, event::PersistEvent, worker::start_pe
 use crate::routes::{create_order, delete_order, get_depth, metrics_endpoint};
 use crate::worker::{Broadcaster, ws_index};
 
+pub mod error;
 pub mod events;
 pub mod inputs;
 pub mod kafka_worker;
@@ -57,25 +58,28 @@ async fn main() -> std::io::Result<()> {
     tokio::spawn(async move {
         let mut batch = Vec::with_capacity(256);
 
-        loop {
-            match order_rx.recv().await {
-                Some(first_event) => {
-                    batch.push(first_event);
+        while let Some(first) = order_rx.recv().await {
+            batch.push(first);
 
-                    while batch.len() < 256 {
-                        match order_rx.try_recv() {
-                            Ok(ev) => batch.push(ev),
-                            Err(_) => break,
-                        }
-                    }
+            while batch.len() < 256 {
+                match order_rx.try_recv() {
+                    Ok(ev) => batch.push(ev),
+                    Err(_) => break,
+                }
+            }
 
-                    for ev in batch.drain(..) {
-                        while order_prod.try_push(ev).is_err() {
-                            tokio::task::yield_now().await;
-                        }
+            for ev in batch.drain(..) {
+                let mut spins = 0;
+                while order_prod.try_push(ev).is_err() {
+                    spins += 1;
+
+                    if spins < 50 {
+                        std::hint::spin_loop();
+                    } else {
+                        tokio::task::yield_now().await;
+                        spins = 0;
                     }
                 }
-                None => break,
             }
         }
     });
