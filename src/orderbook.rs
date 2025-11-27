@@ -16,12 +16,15 @@ use crate::worker::Broadcaster;
 
 use wincode_derive::{SchemaRead, SchemaWrite};
 
+pub const PRICE_SCALE: u64 = 1_000_000;
+pub const QTY_SCALE: u64 = 1_000_000;
+
 #[derive(Debug, Clone, SchemaWrite, SchemaRead)]
 pub struct Order {
     pub order_id: u32,
     pub user_id: u32,
-    pub price: u32,
-    pub quantity: u32,
+    pub price: u64,
+    pub quantity: u64,
     pub side: Side,
 }
 
@@ -41,16 +44,16 @@ impl Order {
 
 struct OrderLocation {
     side: Side,
-    price: u32,
+    price: u64,
     index: usize,
 }
 
 pub struct PriceLevel {
     prices: Vec<u32>,
     users: Vec<u32>,
-    quantities: Vec<u32>,
+    quantities: Vec<u64>,
     tombstone: Vec<bool>,
-    total_qty: u32,
+    total_qty: u64,
 }
 
 impl PriceLevel {
@@ -75,7 +78,7 @@ impl PriceLevel {
     }
 
     #[inline]
-    fn remove_fast(&mut self, idx: usize) -> Result<u32> {
+    fn remove_fast(&mut self, idx: usize) -> Result<u64> {
         if idx >= self.tombstone.len() {
             return Err(OrderBookError::InvalidOrder(format!(
                 "Index {} out of bounds",
@@ -92,7 +95,7 @@ impl PriceLevel {
     }
 
     #[inline]
-    fn reduce_qty(&mut self, idx: usize, new_qty: u32) -> Result<()> {
+    fn reduce_qty(&mut self, idx: usize, new_qty: u64) -> Result<()> {
         if idx >= self.quantities.len() {
             return Err(OrderBookError::InvalidOrder(format!(
                 "Index {} out of bounds",
@@ -122,8 +125,8 @@ impl PriceLevel {
 #[derive(SchemaWrite, SchemaRead)]
 struct TradeMsg {
     msg_type: u8,
-    price: u32,
-    quantity: u32,
+    price: u64,
+    quantity: u64,
     maker_order_id: u32,
     taker_order_id: u32,
     timestamp: i64,
@@ -131,24 +134,24 @@ struct TradeMsg {
 
 #[derive(Debug, Clone)]
 pub struct ExecutedTrade {
-    pub price: u32,
-    pub quantity: u32,
+    pub price: u64,
+    pub quantity: u64,
     pub maker_order_id: u32,
     pub taker_order_id: u32,
     pub timestamp: i64,
 }
 
 struct DepthCache {
-    bids: [[u32; 2]; 20],
-    asks: [[u32; 2]; 20],
+    bids: [[u64; 2]; 20],
+    asks: [[u64; 2]; 20],
     bid_count: usize,
     ask_count: usize,
     dirty: bool,
 }
 
 pub struct OrderBook {
-    pub bids: BTreeMap<u32, PriceLevel>,
-    pub asks: BTreeMap<u32, PriceLevel>,
+    pub bids: BTreeMap<u64, PriceLevel>,
+    pub asks: BTreeMap<u64, PriceLevel>,
 
     order_locations: HashMap<u32, OrderLocation>,
     depth_cache: DepthCache,
@@ -202,7 +205,7 @@ impl OrderBook {
                 &mut self.bids
             };
 
-            let price_keys: Vec<u32> = if matching_asks {
+            let price_keys: Vec<u64> = if matching_asks {
                 book.range(..=taker.price).map(|(p, _)| *p).collect()
             } else {
                 book.range(taker.price..).rev().map(|(p, _)| *p).collect()
@@ -440,8 +443,8 @@ pub struct OrderBookStats {
     pub total_bids: usize,
     pub total_asks: usize,
     pub total_orders: usize,
-    pub best_bid: Option<u32>,
-    pub best_ask: Option<u32>,
+    pub best_bid: Option<u64>,
+    pub best_ask: Option<u64>,
 }
 
 impl Drop for OrderBook {

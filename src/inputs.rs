@@ -9,8 +9,8 @@ pub enum Side {
 
 #[derive(Debug, Serialize, Deserialize, SchemaWrite, SchemaRead)]
 pub struct CreateOrderInput {
-    pub price: u32,
-    pub quantity: u32,
+    pub price: u64,
+    pub quantity: u64,
     pub user_id: u32,
     pub side: Side,
 }

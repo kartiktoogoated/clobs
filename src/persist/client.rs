@@ -41,8 +41,8 @@ impl ScyllaClient {
                 "CREATE TABLE IF NOT EXISTS clob.orders (
                     order_id int PRIMARY KEY,
                     user_id int,
-                    price int,
-                    quantity int,
+                    price bigint,
+                    quantity bigint,
                     side text
                 );",
                 &[],
@@ -54,8 +54,8 @@ impl ScyllaClient {
             .query(
                 "CREATE TABLE IF NOT EXISTS clob.trades (
                     trade_id uuid PRIMARY KEY,
-                    price int,
-                    quantity int,
+                    price bigint,
+                    quantity bigint,
                     maker_order_id int,
                     taker_order_id int,
                     timestamp bigint
@@ -127,8 +127,8 @@ impl ScyllaClient {
                 (
                     order.order_id as i32,
                     order.user_id as i32,
-                    order.price as i32,
-                    order.quantity as i32,
+                    order.price as i64,
+                    order.quantity as i64,
                     side_str,
                 ),
             )
@@ -149,7 +149,7 @@ impl ScyllaClient {
     pub async fn mark_filled(
         &self,
         order_id: u32,
-        traded_qty: u32,
+        traded_qty: u64,
     ) -> Result<(), scylla::transport::errors::QueryError> {
         let result = self
             .session
@@ -157,8 +157,8 @@ impl ScyllaClient {
             .await?;
 
         if let Some(row) = result.rows.and_then(|mut r| r.pop()) {
-            let current_qty: i32 = row.columns[0].as_ref().unwrap().as_int().unwrap();
-            let new_qty = std::cmp::max(0, current_qty - traded_qty as i32);
+            let current_qty: i64 = row.columns[0].as_ref().unwrap().as_bigint().unwrap();
+            let new_qty = std::cmp::max(0, current_qty - traded_qty as i64);
 
             self.session
                 .execute(&self.update_order_stmt, (new_qty, order_id as i32))
@@ -171,8 +171,8 @@ impl ScyllaClient {
     pub async fn insert_trade(
         &self,
         trade_id: [u8; 16],
-        price: u32,
-        quantity: u32,
+        price: u64,
+        quantity: u64,
         maker_order_id: u32,
         taker_order_id: u32,
         timestamp: i64,
@@ -184,8 +184,8 @@ impl ScyllaClient {
                 &self.insert_trade_stmt,
                 (
                     trade_id,
-                    price as i32,
-                    quantity as i32,
+                    price as i64,
+                    quantity as i64,
                     maker_order_id as i32,
                     taker_order_id as i32,
                     timestamp,
