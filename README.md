@@ -14,15 +14,23 @@ Performance Benchmarks
 
 | Metric | Value |
 | --- | --- |
-| **Total Requests** | 9,938,138 |
-| **Throughput** | **16,558 req/s** |
-| **Success Rate** | **99.999%** (123 failures) |
-| **Client P50 Latency** | **0.17 ms** |
-| **Client P99 Latency** | **0.31 ms** |
-| **HTTP Latency (avg)** | **5.36 μs** |
-| **Matching Engine (avg)** | **4.27 μs** |
-| **Trades Executed** | 7,426,601 (74.73% match rate) |
-| **CPU Usage** | 67.5% avg, 97.6% peak |
+| **Total Requests** | 32,296,069 |
+| **Throughput** | **53,822 req/s** |
+| **Success Rate** | **99.986%** (4,413 failures) |
+| **Client P50 Latency** | **0.11 ms** |
+| **Client P99 Latency** | **2.35 ms** |
+| **HTTP Latency (avg)** | **4.68 μs** |
+| **Matching Engine (avg)** | **3.27 μs** |
+| **Order Processing (avg)** | **3.12 μs** |
+| **Trades Executed** | 24,082,877 (74.58% match rate) |
+| **CPU Usage** | 96.8% avg (client), 100.0% peak |
+
+**Performance Distribution:**
+- 81.1% of requests < 5 μs
+- 96.8% of requests < 10 μs  
+- 99.3% of requests < 25 μs
+
+**Sub-3.3 microsecond matching engine latency** achieved through optimized trade buffer flushing (32-trade threshold), lock-free ring buffers, and binary protocol (MessagePack + Wincode). Compiled with `--release` flag for production optimizations.
 
 ### **Standard Load Test (500K requests)**
 
