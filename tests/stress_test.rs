@@ -8,13 +8,33 @@ use tokio::sync::Mutex;
 
 #[derive(Serialize, Deserialize)]
 struct CreateOrderInput {
-    price: u32,
-    quantity: u32,
+    price: u64,
+    quantity: u64,
     user_id: u32,
     side: String,
 }
 
-#[derive(Default)]
+struct TaskStats {
+    latencies: Vec<f64>,
+    failed: usize,
+}
+
+impl TaskStats {
+    fn new(capacity: usize) -> Self {
+        Self {
+            latencies: Vec::with_capacity(capacity),
+            failed: 0,
+        }
+    }
+
+    fn record(&mut self, duration_ms: f64, ok: bool) {
+        self.latencies.push(duration_ms);
+        if !ok {
+            self.failed += 1;
+        }
+    }
+}
+
 struct Stats {
     latencies: Vec<f64>,
     total: usize,
@@ -22,26 +42,37 @@ struct Stats {
 }
 
 impl Stats {
-    fn record(&mut self, duration_ms: f64, ok: bool) {
-        self.latencies.push(duration_ms);
-        self.total += 1;
-        if !ok {
-            self.failed += 1;
+    fn from_task_stats(task_stats: Vec<TaskStats>) -> Self {
+        let mut all_latencies = Vec::new();
+        let mut total_failed = 0;
+
+        for ts in task_stats {
+            all_latencies.extend(ts.latencies);
+            total_failed += ts.failed;
+        }
+
+        let total = all_latencies.len();
+
+        Self {
+            latencies: all_latencies,
+            total,
+            failed: total_failed,
         }
     }
 
     fn summarize(&mut self) {
-        self.latencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let total = self.latencies.len();
-        if total == 0 {
+        if self.latencies.is_empty() {
             println!("No requests recorded.");
             return;
         }
 
+        self.latencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let total = self.latencies.len();
+
         let avg: f64 = self.latencies.iter().sum::<f64>() / total as f64;
-        let p50 = self.latencies[(0.5 * total as f64) as usize];
-        let p95 = self.latencies[(0.95 * total as f64) as usize];
-        let p99 = self.latencies[(0.99 * total as f64) as usize];
+        let p50 = self.latencies[((0.50 * total as f64) as usize).min(total - 1)];
+        let p95 = self.latencies[((0.95 * total as f64) as usize).min(total - 1)];
+        let p99 = self.latencies[((0.99 * total as f64) as usize).min(total - 1)];
 
         println!("\n========== CLIENT-SIDE MEASUREMENTS ==========");
         println!("Total Requests:   {}", total);
@@ -145,15 +176,15 @@ async fn msgpack_stress_test_with_cpu() {
     let base_url = "http://127.0.0.1:8080";
     let total_requests = 500_000;
     let concurrency = 2_000;
+    let requests_per_task = total_requests / concurrency;
 
     let client = Arc::new(
         Client::builder()
-            .pool_max_idle_per_host(200)
+            .pool_max_idle_per_host(500)
             .pool_idle_timeout(Duration::from_secs(90))
             .build()
             .unwrap(),
     );
-    let stats = Arc::new(Mutex::new(Stats::default()));
     let stop = Arc::new(Mutex::new(false));
 
     println!("\n========== MessagePack Stress Test ==========");
@@ -171,25 +202,30 @@ async fn msgpack_stress_test_with_cpu() {
 
     for i in 0..concurrency {
         let client = client.clone();
-        let stats = stats.clone();
+        let url = base_url.to_string();
 
         handles.push(tokio::spawn(async move {
-            for j in 0..(total_requests / concurrency) {
-                let start_op = Instant::now();
+            let mut task_stats = TaskStats::new(requests_per_task);
+
+            for j in 0..requests_per_task {
+                let request_start = Instant::now();
+
                 let side = if (i + j) % 2 == 0 { "Buy" } else { "Sell" };
-                let price = 10000 + ((i * j) % 2000);
-                let qty = 1 + ((i + j) % 20);
+                let price = (10000 + ((i * j) % 2000)) as u64;
+                let qty = (1 + ((i + j) % 20)) as u64;
                 let user_id = 1000 + (i % 1000);
+
                 let input = CreateOrderInput {
                     price,
                     quantity: qty,
-                    user_id,
+                    user_id: user_id.try_into().unwrap(),
                     side: side.to_string(),
                 };
+
                 let body = rmp_serde::to_vec(&input).unwrap();
 
                 let ok = client
-                    .post(format!("{}/order", base_url))
+                    .post(format!("{}/order", url))
                     .header("Content-Type", "application/msgpack")
                     .header("Accept", "application/msgpack")
                     .body(body)
@@ -198,27 +234,32 @@ async fn msgpack_stress_test_with_cpu() {
                     .map(|r| r.status().is_success())
                     .unwrap_or(false);
 
-                let elapsed = start_op.elapsed().as_secs_f64() * 1000.0;
-                stats.lock().await.record(elapsed, ok);
+                let elapsed_ms = request_start.elapsed().as_secs_f64() * 1000.0;
+                task_stats.record(elapsed_ms, ok);
             }
+
+            task_stats
         }));
     }
 
+    let mut all_task_stats = Vec::with_capacity(concurrency);
     for h in handles {
-        let _ = h.await;
+        if let Ok(task_stats) = h.await {
+            all_task_stats.push(task_stats);
+        }
     }
 
     *stop.lock().await = true;
 
     let total_time = start_time.elapsed().as_secs_f64();
-    let total_done = stats.lock().await.total;
-    let rps = total_done as f64 / total_time;
+    let mut stats = Stats::from_task_stats(all_task_stats);
+    let rps = stats.total as f64 / total_time;
 
     println!("\n========== TEST SUMMARY ==========");
     println!("Total Time:   {:.2}s", total_time);
     println!("Throughput:   {:.2} req/sec", rps);
     println!("==================================");
 
-    stats.lock().await.summarize();
+    stats.summarize();
     fetch_server_metrics(&client).await;
 }
