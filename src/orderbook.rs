@@ -284,6 +284,10 @@ impl OrderBook {
             }
         }
 
+        if self.trade_len >= 32 {
+            self.flush_trades()?;
+        }
+
         if taker.quantity > 0 {
             self.insert_resting_order(taker)?;
         }
