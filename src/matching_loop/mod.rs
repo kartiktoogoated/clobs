@@ -39,7 +39,7 @@ pub async fn start_matching_loop(
                         quantity,
                         side,
                     } => {
-                        if let Err(e) = orderbook.match_limit_order(crate::orderbook::Order {
+                        if let Err(e) = orderbook.process_limit_order(crate::orderbook::Order {
                             order_id,
                             user_id,
                             price,
